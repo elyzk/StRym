@@ -1,0 +1,9 @@
+"sample","condition","time_point","replicate"
+"control_0h","control","0h",1
+"control_1h","control","1h",1
+"control_3h","control","3h",1
+"control_6h","control","6h",1
+"heat_0h","heat","0h",1
+"heat_1h","heat","1h",1
+"heat_3h","heat","3h",1
+"heat_6h","heat","6h",1

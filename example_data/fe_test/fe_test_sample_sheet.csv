@@ -1,0 +1,5 @@
+"sample","condition","time_point","replicate","file"
+"C2B3_Fe","C2B","24h",3,"C2B3_Fe.fastq.gz"
+"C2B4_Fe","C2B","24h",4,"C2B4_Fe.fastq.gz"
+"C2D2_Fe","C2D","24h",2,"C2D2_Fe.fastq.gz"
+"C2D4_Fe","C2D","24h",4,"C2D4_Fe.fastq.gz"

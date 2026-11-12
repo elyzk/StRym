@@ -1,0 +1,13 @@
+gene_id	chrom	de	fold_change	base_reads
+G001	chr1	down	8.0	30
+G002	chr1	none	1.0	120
+G003	chr1	none	1.0	60
+G004	chr1	none	1.0	120
+G005	chr1	none	1.0	60
+G006	chr1	none	1.0	60
+G007	chr2	up	8.0	30
+G008	chr2	up	6.0	120
+G009	chr2	none	1.0	60
+G010	chr2	none	1.0	30
+G011	chr2	up	6.0	120
+G012	chr2	none	1.0	60

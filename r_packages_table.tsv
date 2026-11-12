@@ -1,0 +1,11 @@
+Package	Version	Purpose	Citation
+shiny	1.8.1.1	Browser-based user interface	R package (CRAN)
+shinyFiles	0.9.3	File and folder selection in the interface	R package (CRAN)
+DT	0.33	Interactive data tables	R package (CRAN)
+processx	3.8.4	Running analyses as background jobs	R package (CRAN)
+jsonlite	1.8.8	Reading and writing saved settings and design files	R package (CRAN)
+readxl	1.4.3	Reading Excel input files	R package (CRAN)
+writexl	1.5.0	Writing Excel output files	R package (CRAN)
+ranger	0.16.0	Random forest used for RTP-STAR network inference	Wright and Ziegler 2017, J Stat Softw 77(1): 1-17
+visNetwork	2.1.2	Interactive network visualization	R package (CRAN)
+cluster	2.1.6	Clustering	R package (CRAN)
