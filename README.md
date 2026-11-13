@@ -41,6 +41,8 @@ that GENIST and RTP-STAR take as input. For now, supply those files yourself (Ex
      `softwareupdate --install-rosetta`. Then run `bash setup_wsl.sh` from this folder. The script name is retained for compatibility,
      but it detects macOS and creates the correct environments.
    * Already set up before GENIST/RTP-STAR existed? Run `setup_modules.sh` in the same way to add the analysis packages.
+   * **Docker on an ARM host:** the Ubuntu container must be created with `--platform linux/amd64`; the legacy
+     Cufflinks/ea-utils toolchain has no Linux ARM packages. See `MOVING_TO_ANOTHER_MACHINE.md` for a complete command.
 2. Start StRym: double-click **`start_gui.bat`** on Windows, or run `bash start_gui.sh` on macOS/Linux, then open
    http://localhost:3838. The **About** page opens first.
 3. **Experimental Design** page: describe your experiment and what you want out of it; StRym plans the analysis and
@@ -185,6 +187,8 @@ On Windows, use `wsl -d Ubuntu -u root -e bash tests/run_tests.sh quick`.
 ## Notes
 * WSL runs as root here and uses `/root/mamba`. macOS uses `~/micromamba`; Apple Silicon runs the Intel-only Bioconda
   packages through Rosetta and keeps the legacy Tuxedo tools separate from current R/Bioconductor packages.
+* Linux containers on Apple Silicon must use the `linux/amd64` platform. `setup_wsl.sh` rejects native Linux ARM early
+  instead of allowing micromamba to fail after dependency resolution.
 * The default WSL memory limit (half of RAM) may be too small for large genomes; raise it in `%UserProfile%\.wslconfig`.
 * Credits: GENIST — M. Angels de Luis Balaguer; RTP-STAR — Natalie M. Clark (MIT license); GENIE3 — Huynh-Thu, Irrthum,
   Wehenkel & Geurts (PLoS ONE 2010); TuxNet — https://github.com/rspurney/TuxNet. The TuxNet repository has no top-level

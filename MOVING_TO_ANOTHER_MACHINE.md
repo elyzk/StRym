@@ -29,6 +29,29 @@ An external hard drive plugged in after WSL started must be mounted once: open t
 The scripts expect to run as root with the environment in `/root/mamba`. As root: `bash setup_wsl.sh`, then `bash start_gui.sh` and open
 http://localhost:3838. The WSL-specific parts (the Drives tab, `/mnt/c` paths) are simply not used.
 
+## Docker on an ARM host
+The complete TUX toolchain is available for `linux/amd64`, not `linux/arm64`. Container architecture is fixed when the
+container is created; forcing a conda subdirectory inside an existing ARM container is not sufficient. Create an amd64
+Ubuntu container from the host shell:
+
+```bash
+docker run --platform linux/amd64 -it --name strym-ubuntu -p 3838:3838 \
+  -v "$PWD:/opt/StRym" -w /opt/StRym ubuntu:24.04 bash
+```
+
+Then, inside the container:
+
+```bash
+bash setup_wsl.sh
+bash start_gui.sh
+```
+
+Open http://localhost:3838 on the host. The named container retains `/root/mamba`; restart it later with
+`docker start -ai strym-ubuntu`. Mount data/output directories with additional `-v host-path:container-path` arguments.
+
+`setup_wsl.sh` installs `libarchive-tools` and uses `bsdtar` for the micromamba bootstrap. This avoids GNU tar's
+`Function not implemented` failure in some amd64-on-ARM container runtimes.
+
 ## macOS
 1. Install Apple's command-line developer tools: `xcode-select --install`.
 2. On an Apple Silicon Mac, install Rosetta 2: `softwareupdate --install-rosetta`.

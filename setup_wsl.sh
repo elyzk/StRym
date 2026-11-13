@@ -27,6 +27,14 @@ case "$ARCH" in
   *)             echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 
+# The following packages aren't provided for ARM systems by Bioconda. Came across this during testing. This problem doesn't occur on Apple silicon because the packages run through Rosetta 2
+if [[ "$OS" == "Linux" && "$ARCH_TAG" == "aarch64" ]]; then
+  echo "Unsupported Linux architecture: $ARCH." >&2
+  echo "Cufflinks 2.2.1, ea-utils, and the pinned SAMtools/HTSlib builds require linux/amd64." >&2
+  echo "For Docker on an ARM host, recreate the container with: --platform linux/amd64" >&2
+  exit 1
+fi
+
 if [[ "$PLATFORM" == "osx" && "$ARCH_TAG" == "aarch64" ]]; then
   ARCH_TAG="arm64"
 fi
@@ -35,15 +43,26 @@ mkdir -p "$BIN_DIR"
 export PATH="$BIN_DIR:$PATH"
 export DEBIAN_FRONTEND=noninteractive
 
+
+# This was needed to make this setup script work on the docker linux/amd64 container I was using for testing. It should not be required for a native Linux x86 system and could be removed.
+NEED_BOOTSTRAP_DEPS=false
 if ! command -v curl >/dev/null 2>&1 || ! command -v bzip2 >/dev/null 2>&1; then
+  NEED_BOOTSTRAP_DEPS=true
+fi
+if [[ "$OS" == "Linux" ]] && ! command -v bsdtar >/dev/null 2>&1; then
+  NEED_BOOTSTRAP_DEPS=true
+fi
+if [[ "$NEED_BOOTSTRAP_DEPS" == true ]]; then
   if command -v apt-get >/dev/null 2>&1; then
     SUDO=""
     if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
       SUDO="sudo"
     fi
+    PACKAGES=(curl bzip2 ca-certificates)
+    [[ "$OS" == "Linux" ]] && PACKAGES+=(libarchive-tools)
     $SUDO apt-get update -qq
-    $SUDO apt-get install -y -qq curl bzip2 ca-certificates >/dev/null
-  else
+    $SUDO apt-get install -y -qq "${PACKAGES[@]}" >/dev/null
+  elif ! command -v curl >/dev/null 2>&1 || ! command -v bzip2 >/dev/null 2>&1; then
     echo "Error: curl and bzip2 are required. Install them first." >&2
     exit 1
   fi
@@ -53,7 +72,13 @@ RELEASE_URL="https://micro.mamba.pm/api/micromamba/${PLATFORM}-${ARCH_TAG}/lates
 if ! command -v micromamba >/dev/null 2>&1; then
   TMP_DIR="$(mktemp -d)"
   trap 'rm -rf "${TMP_DIR:-}" "${EA_TMP_DIR:-}"' EXIT
-  curl -Ls "$RELEASE_URL" | tar -xvj -C "$TMP_DIR" bin/micromamba
+  MAMBA_ARCHIVE="${TMP_DIR}/micromamba.tar.bz2"
+  curl -fLsS --retry 5 --retry-delay 2 --retry-max-time 120 "$RELEASE_URL" -o "$MAMBA_ARCHIVE"
+  if command -v bsdtar >/dev/null 2>&1; then
+    bsdtar -xjf "$MAMBA_ARCHIVE" -C "$TMP_DIR" bin/micromamba
+  else
+    tar -xjf "$MAMBA_ARCHIVE" -C "$TMP_DIR" bin/micromamba
+  fi
   install -m 0755 "$TMP_DIR/bin/micromamba" "$BIN_DIR/micromamba"
 fi
 MAMBA="$(command -v micromamba)"
