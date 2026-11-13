@@ -3,7 +3,7 @@
 # StRym — Streamlined transcriptomic Regulatory mapping
 
 One browser app that goes from RNA-seq reads to regulatory networks. StRym is an R re-implementation of the
-TuxNet modules (https://github.com/rspurney/TuxNet), running on Windows through WSL:
+TuxNet modules (https://github.com/rspurney/TuxNet), running on Windows through WSL or directly on macOS:
 
 | Module | What it does | Original |
 |---|---|---|
@@ -35,17 +35,20 @@ that GENIST and RTP-STAR take as input. For now, supply those files yourself (Ex
 * Full protocol with screenshots: `StRym_Protocol.docx`. Tests: `tests/testthat` now 1,100+ expectations.
 
 ## Quick start
-1. One-time setup: `wsl --install -d Ubuntu`, then `wsl -d Ubuntu -u root -e bash setup_wsl.sh`
-   (already set up before GENIST/RTP-STAR existed? run `setup_modules.sh` the same way to add the new packages).
-2. Double-click **`start_gui.bat`** (opens http://localhost:3838 on the **About** page).
+1. One-time setup:
+   * **Windows 10/11:** run `wsl --install -d Ubuntu`, then, from this folder, `wsl -d Ubuntu -u root -e bash setup_wsl.sh`.
+   * **macOS:** install Apple's command-line developer tools with `xcode-select --install`. On Apple Silicon, also install Rosetta 2 with
+     `softwareupdate --install-rosetta`. Then run `bash setup_wsl.sh` from this folder. The script name is retained for compatibility,
+     but it detects macOS and creates the correct environments.
+   * Already set up before GENIST/RTP-STAR existed? Run `setup_modules.sh` in the same way to add the analysis packages.
+2. Start StRym: double-click **`start_gui.bat`** on Windows, or run `bash start_gui.sh` on macOS/Linux, then open
+   http://localhost:3838. The **About** page opens first.
 3. **Experimental Design** page: describe your experiment and what you want out of it; StRym plans the analysis and
    saves everything in an organized project folder (see below). **Download the sample experiment and fill everything in**
    saves a small made-up study in a `sample_experiment` folder next to StRym and fills in every field for you.
 4. Prefer to do things yourself? Every module is under **Analysis modules** with all its parameters: work left to
    right through *Inputs → Parameters → Run → Results*. GENIST and RTP-STAR have a **Load the Arabidopsis example data** button.
-5. **Drives** tab: press *Refresh*; a hard drive plugged in after Ubuntu started shows as "not mounted": pick it and press *Mount drive*.
-   A drive that was unplugged and plugged back in shows "needs reconnecting": press *Mount drive* again. Before you eject a drive, press
-   *Release drive* (no run may be using it). The tab itself explains each step and what to try if a drive still will not mount or eject.
+5. On Windows/WSL, use the **Drives** tab to mount or release external drives. macOS volumes are available normally under `/Volumes`.
 6. Runs happen in the background: close the page and reopen it later to see progress; *Cancel* stops everything.
 
 ## Experimental Design (automatic analysis)
@@ -163,8 +166,8 @@ available, so results were not compared number-for-number with TuxNet's.** Delib
 * cluster numbers may differ (R's `cutree` numbering) and k-means uses several random starts.
 
 ## Tests
-`Rscript tests/run_tests.R` (inside WSL) runs 172 unit/edge-case tests for GENIST, RTP-STAR and the Experimental Design engine.
-`wsl -d Ubuntu -u root -e bash all_tests.sh` runs the TUX end-to-end tests on synthetic RNA-seq data.
+`bash tests/run_tests.sh quick` runs the quick suite in the installed environment on WSL, Linux, or macOS.
+On Windows, use `wsl -d Ubuntu -u root -e bash tests/run_tests.sh quick`.
 
 ## Files
 | file | purpose |
@@ -173,14 +176,15 @@ available, so results were not compared number-for-number with TuxNet's.** Delib
 | `pipeline.R`, `analysis/`, `run_analysis_cli.R`, `make_demo_data.R` | Experimental Design engine, analysis step scripts, baseline scripts, runner, demo data |
 | `tuxedo.R`, `run_cli.R` | TUX pipeline and its command-line runner |
 | `genist.R`, `rtpstar.R`, `io_utils.R`, `run_genist_cli.R`, `run_rtpstar_cli.R` | GENIST / RTP-STAR and their runners |
-| `start_gui.bat`, `start_gui.sh`, `stop_gui.sh` | launch / stop (Windows → WSL) |
-| `setup_wsl.sh`, `setup_modules.sh` | one-time install / add the module and analysis packages to an existing install |
+| `start_gui.bat`, `start_gui.sh`, `stop_gui.sh` | launch / stop on Windows/WSL, Linux, or macOS |
+| `setup_wsl.sh`, `setup_modules.sh` | platform-detecting one-time install / add packages to an existing install |
 | `reference/` | Arabidopsis annotation, genome, TF list, gene names (from TuxNet) |
 | `example_data/` | TuxNet's Arabidopsis example data for GENIST and RTP-STAR |
 | `make_synthetic.R`, `make_longread_data.R`, `run_test.sh`, `verify.sh`, `all_tests.sh`, `tests/` | tests |
 
 ## Notes
-* WSL runs as root here; the launcher assumes the `tuxnet` environment under `/root`.
+* WSL runs as root here and uses `/root/mamba`. macOS uses `~/micromamba`; Apple Silicon runs the Intel-only Bioconda
+  packages through Rosetta and keeps the legacy Tuxedo tools separate from current R/Bioconductor packages.
 * The default WSL memory limit (half of RAM) may be too small for large genomes; raise it in `%UserProfile%\.wslconfig`.
 * Credits: GENIST — M. Angels de Luis Balaguer; RTP-STAR — Natalie M. Clark (MIT license); GENIE3 — Huynh-Thu, Irrthum,
   Wehenkel & Geurts (PLoS ONE 2010); TuxNet — https://github.com/rspurney/TuxNet. The TuxNet repository has no top-level

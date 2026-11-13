@@ -3,7 +3,11 @@
 #   bash tests/run_tests.sh            all tests (30-60 minutes: the real Tuxedo tools and the single cell clustering runs are slow)
 #   bash tests/run_tests.sh quick      everything EXCEPT the slow groups (resume, quantify, seurat, seurat-multi): about 6 minutes
 #   bash tests/run_tests.sh quantify   only tests/testthat/test-quantify.R
-export PATH=/root/mamba/envs/tuxnet/bin:$PATH
+if [[ -z "${MAMBA_ROOT_PREFIX:-}" ]]; then
+  [[ "$(uname -s)" == "Darwin" ]] && MAMBA_ROOT_PREFIX="${HOME}/micromamba" || MAMBA_ROOT_PREFIX="${HOME}/mamba"
+fi
+export MAMBA_ROOT_PREFIX
+export PATH="${MAMBA_ROOT_PREFIX}/envs/tuxnet/bin:${MAMBA_ROOT_PREFIX}/envs/tuxnet-tools/bin:$PATH"
 cd "$(dirname "$0")/.." || exit 1
 log=$(mktemp)
 SUMMARY="cat('\nPASSED:', sum(r\$passed), ' FAILED:', sum(r\$failed), ' ERRORS:', sum(r\$error), ' SKIPPED:', sum(r\$skipped), '\n')"

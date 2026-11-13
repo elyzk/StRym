@@ -614,7 +614,10 @@ clear_outputs <- function(out_folder) {
 }
 
 # ---- tools for long reads (see longreads.R) -----------------------------------------------------------------------------
-.LONG_ENV_BIN <- "/root/mamba/envs/longread/bin"
+.mamba_root <- Sys.getenv("MAMBA_ROOT_PREFIX", "")
+if (!nzchar(.mamba_root))
+  .mamba_root <- file.path(path.expand("~"), if (identical(Sys.info()[["sysname"]], "Darwin")) "micromamba" else "mamba")
+.LONG_ENV_BIN <- file.path(.mamba_root, "envs", "longread", "bin")
 
 .long_tool <- function(name) {
   cand <- c(Sys.getenv(paste0("STRYM_", toupper(name)), ""), file.path(.LONG_ENV_BIN, name), unname(Sys.which(name)))

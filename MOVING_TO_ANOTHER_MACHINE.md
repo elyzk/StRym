@@ -30,7 +30,13 @@ The scripts expect to run as root with the environment in `/root/mamba`. As root
 http://localhost:3838. The WSL-specific parts (the Drives tab, `/mnt/c` paths) are simply not used.
 
 ## macOS
-Not supported or tested: the setup script is for Linux. The tools exist for macOS in bioconda, but the install and the paths would need adapting.
+1. Install Apple's command-line developer tools: `xcode-select --install`.
+2. On an Apple Silicon Mac, install Rosetta 2: `softwareupdate --install-rosetta`.
+3. From the StRym folder, run `bash setup_wsl.sh`. Despite its historical name, the script detects macOS. It creates
+   `~/micromamba/envs/tuxnet` for R and `~/micromamba/envs/tuxnet-tools` for the legacy Tuxedo executables. Intel-only
+   Bioconda packages run through Rosetta; `fastq-mcf` is built natively from the pinned ea-utils source.
+4. Run `bash start_gui.sh`, then open http://localhost:3838. Stop it with `bash stop_gui.sh` or Ctrl-C.
+5. Check the installation with `bash tests/run_tests.sh quick`.
 
 ## Practical notes
 * **Disk space:** about 5 GB for the software, and roughly 22 GB free for a 4-sample project of ~80 million reads (StRym checks before it starts).
@@ -44,9 +50,10 @@ Not supported or tested: the setup script is for Linux. The tools exist for macO
   Cufflinks ~14.5 min per sample, Cuffdiff ~6.5 h). The time estimate StRym shows before a run is known to be too low for large runs.
 
 ## Testing and reporting a problem
-* **Quick check that an install is healthy:** inside Ubuntu run `bash tests/run_tests.sh quick` (about 6 minutes: everything except the slow groups).
-  `bash tests/run_tests.sh edgecases` takes about a minute. The whole suite is `bash tests/run_tests.sh` (30–60 minutes, mostly the real Tuxedo tools
-  and the single cell clustering runs); one group at a time works too: `genist`, `pipeline`, `quantify`, `rtpstar`, `seurat`, `resume`.
+* **Quick check that an install is healthy:** run `bash tests/run_tests.sh quick` (about 6 minutes: everything except the slow groups).
+  From Windows PowerShell, prefix that command with `wsl -d Ubuntu -u root -e`. `bash tests/run_tests.sh edgecases` takes about
+  a minute. The whole suite is `bash tests/run_tests.sh` (30–60 minutes, mostly the real Tuxedo tools and single-cell clustering);
+  one group at a time works too: `genist`, `pipeline`, `quantify`, `rtpstar`, `seurat`, `resume`.
 * **What to send when something goes wrong** (so it can be reproduced): the text of the error on the page; the project's `run_summary.csv`,
   `analysis_run.log` and the `00_design` folder (they record the settings and the sample sheet); and the logs StRym keeps inside Ubuntu in
   `/root/.tuxnet_r/` (`analysis_last_run.log`, `last_run.log`). Never send the FASTQ files or other data; the sample sheet and logs are enough.
