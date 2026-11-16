@@ -29,6 +29,17 @@ strym_step_qc_overview <- function(ctx)
   if (length(dr$empty)) note("warning", sprintf("Sample(s) with no counts at all were left out: %s", paste(utils::head(dr$empty, 6), collapse = ", ")), paste(utils::head(dr$empty, 6), collapse = ", "), "A library with no reads is a failed sample: check the sequencing or the export of the table.")
   if (length(dr$unlisted)) note("warning", sprintf("%d column(s) of the table are not in the sample sheet and were left out: %s", length(dr$unlisted), paste(utils::head(dr$unlisted, 6), collapse = ", ")), paste(utils::head(dr$unlisted, 6), collapse = ", "), "Add them to the sample sheet if they are samples.")
   if (length(dr$missing)) note("info", sprintf("%d sample(s) of the sample sheet are not in the table: %s", length(dr$missing), paste(utils::head(dr$missing, 6), collapse = ", ")), "sample sheet", "Check the spelling of the names.")
+  # what the table reader repaired on the way in: said here once, in the notes file and the summary page, not only in the log
+  if (isTRUE(dr$rows_blank > 0) || isTRUE(dr$rows_dup > 0)) note("info", sprintf("%d row(s) of the table were left out: %d without a gene id, %d with a gene id that was already listed (the first is kept)", dr$rows_blank + dr$rows_dup, dr$rows_blank, dr$rows_dup), "table", "Check the gene id column of your table.")
+  if (isTRUE(dr$na_cells > 0)) note("warning", sprintf("%s empty or non-numeric cell(s) were read as 0", format(dr$na_cells, big.mark = ",")), "table", "Check the table for text, '-' or 'NA' where a number belongs.")
+  if (isTRUE(dr$inf_cells > 0)) note("warning", sprintf("%d cell(s) held Inf / -Inf and were read as 0", dr$inf_cells), "table", "Inf is not a count: check where it came from (a division by zero in a spreadsheet?).")
+  if (isTRUE(dr$decimal_cells > 0)) note("info", sprintf("%d cell(s) of a table of whole numbers held decimals and were rounded", dr$decimal_cells), "table", "Check that no value was typed with a decimal comma by mistake.")
+  if (isTRUE(data$whole_numbers) && is.null(data$counts) && identical(d$data_kind, "counts"))
+    note("info", "Every value is a whole number although the table is set as already normalized (FPKM / TPM)", "table", "If these are raw counts, choose “Raw counts” as the unit: DESeq2 then becomes available and the depth pictures show reads.")
+  vv <- as.numeric(M[M > 0]); if (length(vv) > 100) { q999 <- stats::quantile(vv, 0.999); mx <- max(vv)
+    if (is.finite(q999) && q999 > 0 && mx > 1000 * q999) { w <- which(M == mx, arr.ind = TRUE)[1, ]
+      note("warning", sprintf("Unusually large value: %s in sample %s is %s (over 1000 times the 99.9th percentile of the table)", rownames(M)[w[1]], colnames(M)[w[2]], format(mx, big.mark = ",", scientific = FALSE)), colnames(M)[w[2]],
+           "One huge value dominates its sample (it shrinks every other gene in the per-million scaling and distorts PCA). Check for a typo such as extra digits.") } }
 
   # 1. the design grid
   grid <- as.data.frame(table(condition = S$condition, time_point = S$time_point)); names(grid)[3] <- "samples"
@@ -44,8 +55,10 @@ strym_step_qc_overview <- function(ctx)
     for (i in seq_len(nrow(holes))) if (any(grid$samples[grid$time_point == holes$time_point[i]] > 0))
       note("warning", sprintf("No samples for %s at %s", holes$condition[i], holes$time_point[i]), "design", "Time-course comparisons leave this time point out. If the sample failed, check the sample sheet; if it was never taken, this is expected.")
   }
+  two <- grid[grid$samples == 2, , drop = FALSE]
+  if (nrow(two) && !nrow(grid[grid$samples >= 3, , drop = FALSE])) note("info", sprintf("Every condition/time point combination with samples has only 2 replicates (%d of them)", nrow(two)), "design", "Two replicates are the minimum for the statistics: they work, but only large changes will be found. Three or more replicates are better.")
   one <- grid[grid$samples == 1, , drop = FALSE]
-  if (nrow(one)) note("info", sprintf("%d condition/time point combination(s) have a single sample (e.g. %s at %s)", nrow(one), one$condition[1], one$time_point[1]), "design", "Without replicates there is no estimate of variability: the statistics are weak there.")
+  if (nrow(one)) note("info", sprintf("%d condition/time point combination(s) have a single sample (e.g. %s)", nrow(one), if (identical(as.character(one$time_point[1]), "all")) as.character(one$condition[1]) else sprintf("%s at %s", one$condition[1], one$time_point[1])), "design", "Without replicates there is no estimate of variability: the statistics are weak there.")
 
   # 2. depth and genes detected, from raw counts when there are some
   raw <- data$counts

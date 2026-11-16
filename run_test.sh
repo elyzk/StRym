@@ -3,6 +3,7 @@
 #   Synthetic end-to-end test. Data in /root/tuxtest/<name>; outputs in <name>/out.
 #   win : copy FASTQ inputs to /mnt/c/tuxtest_inputs_<name> (a Windows-drive mount,
 #         like an external hard drive) and read them from there.
+#   STRYM_CLEANER=fastp bash run_test.sh ...   uses fastp instead of fastq-mcf for the read cleaning.
 #   flat: all FASTQ in one folder, groups inferred from names; gz: gzip the FASTQs.
 set -e
 mode=${1:-single}; where=${2:-local}; layout=${3:-folders}; gz=${4:-}
@@ -24,7 +25,7 @@ if [ "$where" = spaces ]; then      # spaces in every path (inputs, reference, o
 fi
 cat > $d/cfg.json <<J
 {"inputs_folder":"$inputs","output_folder":"$outdir","gtf_file":"$gtf","fasta_file":"$fasta",
- "read_type":"$mode","threads":4,"adapter_fasta":"$src/IlluminaAdaptorSeq.fasta"}
+ "read_type":"$mode","cleaner":"${STRYM_CLEANER:-auto}","threads":4,"adapter_fasta":"$src/IlluminaAdaptorSeq.fasta"}
 J
 set +e
 Rscript $src/run_cli.R $d/cfg.json > $d/run.log 2>&1; rc=$?

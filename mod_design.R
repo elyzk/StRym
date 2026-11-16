@@ -1,4 +1,13 @@
 # mod_design.R -- the "Experimental Design" page: describe the experiment, review the plan, run, browse results.
+#
+# design_ui(id)      the page. Left column: 1 project and output folder, 2 your experiment, 3 sample sheet, 4 what would you like, analysis settings,
+#                    sample experiment. Right column: checks, 5 analysis plan, 6 run, results.
+# design_server(...) the logic. The flow of reactive values:
+#   the inputs --> dsg_base() (the design without its sample sheet) --> the sample sheet (rv_sheet: drafted by strym_auto_sample_sheet(), corrected by hand,
+#   or the researcher's own file) --> dsg() (design + sheet) --> plan() (strym_plan(): which steps apply) --> selected() / blocked() --> checks
+#   (strym_validate_design, strym_check_selection) --> ask_run(): the confirmation window --> job (run_analysis_cli.R in the background) --> Results.
+# The rules about WHAT can run live in pipeline.R and analysis/registry.R; this file only connects them to the screen. Input boxes that take files or
+# folders are pathUI()/pathServer() (gui_helpers.R); background jobs are job_controller() (gui_helpers.R, jobs.R).
 
 design_ui <- function(id) {
   ns <- NS(id)
@@ -93,6 +102,8 @@ design_ui <- function(id) {
         tags$details(
           tags$summary("Control condition, cutoffs, samples to leave out, gene list, single cell options"),
           p(class = "hint", style = "margin-top:8px", "The defaults are those of the original analysis scripts. Change them only if you need to."),
+          textInput(ns("p_bextra"), "More result folders for the interactive browser (optional)", "", width = "100%",
+                    placeholder = "e.g. the folder of a GENIST or RTP-STAR tab run saved elsewhere; separate several with commas"),
           conditionalPanel("input.type == 'bulk'", ns = ns,
             div(class = "opt-group", "Time-course analyses (entropy, PCA, trajectories)"),
             textInput(ns("p_control"), "Control condition(s)", "", width = "100%", placeholder = "leave blank to detect (names like control, mock, untreated, WT)"),
@@ -104,6 +115,11 @@ design_ui <- function(id) {
             fluidRow(
               column(6, numericInput(ns("p_minfpkm"), "Minimum mean expression in some sample (CPM for counts, FPKM otherwise)", 2, min = 0, step = 0.5)),
               column(6, numericInput(ns("p_mintp"), "Main set: changed at least this many time points", 2, min = 1, step = 1))),
+            selectInput(ns("p_pca_level"), "PCA: what is one point?",
+                        c("A replicate (every sample is a point)" = "replicate", "A condition at a time point (replicates averaged)" = "average", "Both (two plots)" = "both"), width = "100%"),
+            fluidRow(
+              column(6, checkboxInput(ns("p_heatmaps"), "Draw a heatmap of the genes the entropy steps call", TRUE)),
+              column(6, numericInput(ns("p_hm_max"), "Heatmap: most genes per comparison", 100, min = 2, step = 10))),
             textInput(ns("p_drop"), "Samples to leave out (e.g. outliers seen in the PCA)", "", width = "100%", placeholder = "sample names, comma separated"),
             pathUI(ns("trajgenes"), "Genes for the trajectory plots (optional)", type = "file",
                    help = "A text or CSV file with one gene id or name per line. Without it, the trajectories show the genes found by the entropy steps."),
@@ -125,7 +141,7 @@ design_ui <- function(id) {
             fluidRow(
               column(6, numericInput(ns("p_sc_res"), "Clustering resolution", 1, min = 0.1, step = 0.1)),
               column(6, numericInput(ns("p_sc_npcs"), "Principal components (0 = automatic)", 0, min = 0, step = 1))),
-            selectInput(ns("p_sc_integ"), "Integrate the samples with", c("CCA (Seurat default)" = "cca", "RPCA (faster for big data)" = "rpca", "Harmony" = "harmony", "No integration (only merge)" = "none"), width = "100%"),
+            selectInput(ns("p_sc_integ"), "Integrate the samples with", c("CCA (Seurat default)" = "cca", "RPCA (meant for very large data; slower on small data)" = "rpca", "Harmony" = "harmony", "No integration (only merge)" = "none"), width = "100%"),
             p(class = "hint", "The cell filters depend on your protocol: look at the QC plot that StRym saves and rerun if needed.")))),
       div(class = "card", h4("Try a sample experiment"),
         actionButton(ns("demo"), "Download the sample experiment and fill everything in"),
@@ -158,6 +174,10 @@ design_server <- function(id, roots, app_dir) {
     kind <- reactive(if (identical(input$type, "single_cell")) input$kind_sc else input$kind_bulk)
     params_in <- reactive(list(control = input$p_control, pairs = input$p_pairs, baseline_first = isTRUE(input$p_baseline),
       min_log2fc = input$p_log2fc, q_cutoff = input$p_q, min_fpkm = input$p_minfpkm, min_sig_tp = input$p_mintp, drop_reps = input$p_drop,
+      browser_extra = if (is.null(input$p_bextra)) "" else input$p_bextra,
+      pca_level = if (is.null(input$p_pca_level)) "replicate" else input$p_pca_level,
+      entropy_heatmaps = if (is.null(input$p_heatmaps)) TRUE else isTRUE(input$p_heatmaps),
+      heatmap_max_genes = if (is.null(input$p_hm_max) || is.na(input$p_hm_max)) 100 else input$p_hm_max,
       genist_max_genes = input$p_genist_max, genist_tf_file = gtf_list$path(), tux_fresh = isTRUE(input$p_tux_fresh),
       trajectory_genes = traj$path(), sc_min_features = input$p_sc_minfeat, sc_min_cells = input$p_sc_mincells, sc_min_counts = input$p_sc_mincounts,
       sc_max_counts = input$p_sc_maxcounts, sc_resolution = input$p_sc_res, sc_npcs = input$p_sc_npcs, sc_integration = input$p_sc_integ))
@@ -178,14 +198,33 @@ design_server <- function(id, roots, app_dir) {
     safe_name <- reactive({ n <- gsub("^_+|_+$", "", gsub("[^A-Za-z0-9._-]+", "_", trimws(input$name))); if (nzchar(n)) n else "project" })
     rv_sheet <- reactiveVal(NULL); sheet_note <- reactiveVal(""); last_key <- reactiveVal(""); pending_sheet <- reactiveVal(NULL); saved_sheet <- reactiveVal(NULL)
     own_sheet <- reactive(ss$path())                                           # a sheet the researcher brought along
+    file_sig <- function(p) { p <- p[nzchar(p)]; if (!length(p) || !file.exists(p[1]) || dir.exists(p[1])) "" else { i <- file.info(p[1]); paste(i$size, as.numeric(i$mtime)) } }   # a changed table (same name, new content) rebuilds the sheet too
+    sheet_edited <- reactiveVal(FALSE)                                         # TRUE once the researcher corrected cells by hand
     sheet_key <- reactive({ d <- dsg_base()
-      as.character(jsonlite::toJSON(list(d$data_kind, d$data_path, d$fastq_files, d$read_type, d$condition_names, d$timepoint_names, d$n_conditions, d$n_timepoints), auto_unbox = TRUE)) })
+      as.character(jsonlite::toJSON(list(d$data_kind, d$data_path, file_sig(d$data_path), d$fastq_files, d$read_type, d$condition_names, d$timepoint_names, d$n_conditions, d$n_timepoints), auto_unbox = TRUE)) })
+    same_samples <- function(a, b) is.data.frame(a) && is.data.frame(b) && "sample" %in% names(a) && "sample" %in% names(b) && setequal(a$sample, b$sample)
     observe({                                                                  # rebuild only when something the sheet depends on really changed
       key <- sheet_key(); if (identical(key, isolate(last_key()))) return()
       last_key(key); pend <- isolate(pending_sheet())
-      if (is.data.frame(pend)) { pending_sheet(NULL); rv_sheet(pend); sheet_note("Restored from the sample sheet saved with this project."); return() }
-      a <- strym_auto_sample_sheet(isolate(dsg_base())); rv_sheet(a$sheet); sheet_note(a$note)
+      a <- strym_auto_sample_sheet(isolate(dsg_base()))
+      if (is.data.frame(pend)) {
+        pending_sheet(NULL)
+        if (!is.data.frame(a$sheet) || same_samples(pend, a$sheet)) { rv_sheet(pend); sheet_edited(FALSE); sheet_note("Restored from the sample sheet saved with this project."); return() }
+        sheet_note("The sample sheet saved with this project no longer matches your data, so StRym built a new one from what you entered above.")   # never show a stale sheet
+        rv_sheet(a$sheet); sheet_edited(FALSE); return()
+      }
+      rv_sheet(a$sheet); sheet_edited(FALSE); sheet_note(a$note)
     })
+    # The sheet the run uses and the confirmation window shows must describe the experiment as it is NOW: just before they are built the sheet is derived
+    # again from the current entries. A sheet the researcher corrected by hand is kept, but a warning says when its samples no longer match the data.
+    refresh_sheet <- function() {
+      if (nzchar(own_sheet())) return(character())
+      a <- tryCatch(strym_auto_sample_sheet(dsg_base()), error = function(e) NULL); cur <- rv_sheet()
+      if (is.null(a) || !is.data.frame(a$sheet)) return(character())
+      if (!sheet_edited()) { if (!identical(a$sheet, cur)) { rv_sheet(a$sheet); sheet_note(a$note) }; return(character()) }
+      if (!same_samples(cur, a$sheet)) return("The sample sheet you corrected by hand lists different samples than your data now has. Press “Clear all fields” or re-enter the data to have StRym build a fresh sheet, or fix the sheet before running.")
+      character()
+    }
     shown_sheet <- reactive({                                                  # what the page shows and the run uses
       if (nzchar(own_sheet()) && file.exists(own_sheet())) strym_read_sample_sheet(own_sheet()) else rv_sheet() })
     sheet_path <- reactive({                                                   # file the checks read (a preview copy until the run starts)
@@ -283,7 +322,7 @@ design_server <- function(id, roots, app_dir) {
         n <- suppressWarnings(as.integer(v)); if (is.na(n)) return(showNotification("Replicate must be a whole number.", type = "warning"))
         s[r, ci] <- n
       } else s[r, ci] <- v
-      rv_sheet(s)
+      rv_sheet(s); sheet_edited(TRUE)
     })
     save_sheet_file <- function(s) {                                           # write the sheet into the project folder; returns the path
       p <- proj$path(); dir.create(p, recursive = TRUE, showWarnings = FALSE)
@@ -339,6 +378,7 @@ design_server <- function(id, roots, app_dir) {
     }
     pending <- reactiveVal(character())
     ask_run <- function(steps_to_run) {                                        # nothing starts until the researcher confirms
+      stale <- refresh_sheet()                                                 # the window below must show the experiment as it is now
       d <- dsg(); pending(steps_to_run)
       est <- tryCatch(strym_estimate_run(d, steps_to_run), error = function(e) list(seconds = 0, need = NA_real_, free = NA_real_, lines = character()))
       sh <- shown_sheet(); win <- function(p) if (nzchar(p)) to_windows_path(p) else "(none)"
@@ -378,7 +418,7 @@ design_server <- function(id, roots, app_dir) {
             tags$thead(tags$tr(lapply(names(shown), tags$th))), tags$tbody(lapply(seq_len(nrow(shown)), function(i) tags$tr(lapply(shown[i, ], function(v) tags$td(as.character(v))))))),
             if (nrow(sh) > 40) div(class = "hint", sprintf("… and %d more.", nrow(sh) - 40))))
       } else div(class = "hint", "No sample sheet: samples are grouped as described in the checks.")
-      warns <- check()$warnings
+      warns <- c(check()$warnings, stale)
       showModal(modalDialog(title = "Ready to start? Please check", size = "l", easyClose = FALSE,
         h5("Your experiment"), facts,
         h5("What will run"), tags$ol(lapply(labs, tags$li)),
@@ -415,8 +455,7 @@ design_server <- function(id, roots, app_dir) {
         tags$td(tags$b(s$label[i]), br(), span(class = "path", paste0(s$folder[i], "/"))),
         tags$td(span(class = paste0("badge-s badge-", s$status[i]), s$status[i])),
         tags$td(class = "hint", s$message[i])))
-      imgs <- list.files(pd, pattern = "\\.(png|svg|jpe?g)$", recursive = TRUE, ignore.case = TRUE)
-      imgs <- imgs[!grepl("^07_interactive_browser/", imgs)]
+      imgs <- strym_result_files(pd, "\\.(png|svg|jpe?g)$")           # only what the steps wrote: an output folder like Downloads must not fill the list with its own files
       tagList(
         div(class = "path", "Project folder: ", to_windows_path(pd)),
         tags$a(href = "strymproj/index.html", target = "_blank", "Open the summary page ↗"), br(), br(),
@@ -492,6 +531,8 @@ design_server <- function(id, roots, app_dir) {
         updateNumericInput(session, k, value = pp[[c(p_log2fc = "min_log2fc", p_q = "q_cutoff", p_minfpkm = "min_fpkm", p_mintp = "min_sig_tp", p_sc_minfeat = "sc_min_features",
                                                     p_sc_mincells = "sc_min_cells", p_sc_mincounts = "sc_min_counts", p_sc_maxcounts = "sc_max_counts", p_sc_res = "sc_resolution", p_sc_npcs = "sc_npcs")[[k]]]])
       updateSelectInput(session, "p_sc_integ", selected = pp$sc_integration); traj$set(pp$trajectory_genes)
+      updateSelectInput(session, "p_pca_level", selected = pp$pca_level); updateCheckboxInput(session, "p_heatmaps", value = isTRUE(pp$entropy_heatmaps))
+      updateNumericInput(session, "p_hm_max", value = pp$heatmap_max_genes); updateTextInput(session, "p_bextra", value = pp$browser_extra)
       updateNumericInput(session, "p_genist_max", value = pp$genist_max_genes); gtf_list$set(pp$genist_tf_file); updateCheckboxInput(session, "p_tux_fresh", value = isTRUE(pp$tux_fresh))
     }
     observeEvent(input$demo, {                                                 # download (create) the sample experiment, then fill in every field
@@ -521,7 +562,7 @@ design_server <- function(id, roots, app_dir) {
       removeModal()
       if (job$running()) return()
       updateTextInput(session, "name", value = ""); proj$set(""); data$set(""); ss$set(""); gtf$set(""); fasta$set("")
-      rv_sheet(NULL); pending_sheet(NULL); saved_sheet(NULL); last_key(""); sheet_note("")
+      rv_sheet(NULL); pending_sheet(NULL); saved_sheet(NULL); last_key(""); sheet_note(""); sheet_edited(FALSE)
       updateRadioButtons(session, "type", selected = "bulk"); updateSelectInput(session, "kind_bulk", selected = "counts"); updateSelectInput(session, "kind_sc", selected = "10x")
       updateRadioButtons(session, "read_type", selected = "single"); updateSelectInput(session, "platform", selected = "short")
       updateSelectInput(session, "unit", selected = "auto"); dif$set(""); adapter$set("")                                     # the table-unit choice and the Cuffdiff results box
@@ -531,9 +572,10 @@ design_server <- function(id, roots, app_dir) {
       for (o in names(opt_map)) updateCheckboxInput(session, paste0("opt_", o), value = identical(o, "qc"))         # the Data overview stays ticked, as on a fresh page
       for (i in ids) updateCheckboxInput(session, paste0("sel_", i), value = FALSE)
       updateCheckboxInput(session, "browser", value = FALSE)
-      for (k in c("p_control", "p_pairs", "p_drop")) updateTextInput(session, k, value = ""); traj$set(""); updateCheckboxInput(session, "p_baseline", value = TRUE)
+      for (k in c("p_control", "p_pairs", "p_drop", "p_bextra")) updateTextInput(session, k, value = ""); traj$set(""); updateCheckboxInput(session, "p_baseline", value = TRUE)
       df <- strym_default_params(); updateNumericInput(session, "p_genist_max", value = df$genist_max_genes); gtf_list$set(""); updateCheckboxInput(session, "p_tux_fresh", value = FALSE)
       updateNumericInput(session, "p_log2fc", value = df$min_log2fc); updateNumericInput(session, "p_q", value = df$q_cutoff); updateNumericInput(session, "p_minfpkm", value = df$min_fpkm)
+      updateSelectInput(session, "p_pca_level", selected = df$pca_level); updateCheckboxInput(session, "p_heatmaps", value = df$entropy_heatmaps); updateNumericInput(session, "p_hm_max", value = df$heatmap_max_genes)
       updateNumericInput(session, "p_mintp", value = df$min_sig_tp); updateNumericInput(session, "p_sc_minfeat", value = df$sc_min_features); updateNumericInput(session, "p_sc_mincells", value = df$sc_min_cells)
       updateNumericInput(session, "p_sc_mincounts", value = df$sc_min_counts); updateNumericInput(session, "p_sc_maxcounts", value = df$sc_max_counts)
       updateNumericInput(session, "p_sc_res", value = df$sc_resolution); updateNumericInput(session, "p_sc_npcs", value = df$sc_npcs); updateSelectInput(session, "p_sc_integ", selected = df$sc_integration)
@@ -549,3 +591,4 @@ design_server <- function(id, roots, app_dir) {
     }, once = TRUE)
   })
 }
+

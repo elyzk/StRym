@@ -2,18 +2,23 @@
 # Requires drives.R (clean_path, unmounted_drive_problem) and jobs.R.
 
 # ---- a path box with a Browse button (file or folder) ----------------------------------------------
+# The example in an empty path box: Windows paths on Windows (StRym runs inside WSL there), the usual home-folder path elsewhere.
+path_placeholder <- function(example = "file.xlsx") switch(strym_platform(),
+  wsl = sprintf("Paste a path (D:\\data\\%s or /mnt/d/...) or browse", example), mac = sprintf("Paste a path (/Users/me/data/%s) or browse", example),
+  windows = sprintf("Paste a path (D:/data/%s) or browse", example), sprintf("Paste a path (/home/me/data/%s) or browse", example))
+
 pathUI <- function(id, label, type = c("file", "dir", "any"), help = NULL, multiple = FALSE,
-                   placeholder = "Paste a path (D:\\data\\file.xlsx or /mnt/d/...) or browse") {
+                   placeholder = path_placeholder()) {
   type <- match.arg(type); ns <- NS(id)
   drop_hint <- switch(type, dir = "Drag and drop a folder here, or browse.",
                       file = if (multiple) "Drag and drop files here, or browse." else "Drag and drop a file here, or browse.",
                       any = if (multiple) "Drag and drop files or a folder here, or browse." else "Drag and drop a file or folder here, or browse.")
   div(class = "dz", `data-ns` = id,                                            # drop target (see www/strym.js)
     textInput(ns("txt"), label, "", width = "100%", placeholder = placeholder),
-    if (type == "dir") shinyDirButton(ns("btn"), "Browse…", label)
-    else if (type == "file") shinyFilesButton(ns("btn"), if (multiple) "Browse (select several)…" else "Browse…", label, multiple)
-    else tagList(shinyFilesButton(ns("btn"), if (multiple) "Browse for files (select several)…" else "Browse for a file…", label, multiple),   # "any": file(s) OR a folder
-                 shinyDirButton(ns("btn_dir"), "Browse for a folder…", label)),
+    if (type == "dir") actionButton(ns("btn"), "Browse…", class = "btn-default btn-sm")
+    else if (type == "file") actionButton(ns("btn"), if (multiple) "Browse (select several)…" else "Browse…", class = "btn-default btn-sm")
+    else tagList(actionButton(ns("btn"), if (multiple) "Browse for files (select several)…" else "Browse for a file…", class = "btn-default btn-sm"),   # "any": file(s) OR a folder
+                 actionButton(ns("btn_dir"), "Browse for a folder…", class = "btn-default btn-sm")),
     span(class = "dz-hint", drop_hint),
     uiOutput(ns("note")),
     if (!is.null(help)) div(class = "hint", help),
@@ -32,9 +37,7 @@ pathServer <- function(id, roots, type = c("file", "dir", "any"),
                        filetypes = c("xlsx", "xls", "csv", "txt", "tsv", "tab"), multiple = FALSE) {
   type <- match.arg(type)
   moduleServer(id, function(input, output, session) {
-    if (type == "dir") shinyDirChoose(input, "btn", roots = roots)
-    else shinyFileChoose(input, "btn", roots = roots, filetypes = filetypes)
-    if (type == "any") shinyDirChoose(input, "btn_dir", roots = roots)
+    br <- strym_browser_attach(input, output, session, key = "bf")        # the Browse window (filebrowser.R); `roots` is no longer needed and only kept so callers do not change
     sel <- reactiveVal(character()); sel_dir <- reactiveVal("")
 
     set_txt <- function(v) updateTextInput(session, "txt", value = as.character(v))
@@ -48,10 +51,9 @@ pathServer <- function(id, roots, type = c("file", "dir", "any"),
       } else { sel(character()); set_txt(p[1]) }
     }
     observeEvent(input$txt, { if (length(sel()) && !identical(clean_path(input$txt), sel_dir())) sel(character()) }, ignoreInit = TRUE)  # typing a new path drops the file choice
-    observeEvent(input$btn, if (is.list(input$btn)) {
-      apply_paths(if (type == "dir") parseDirPath(roots, input$btn) else parseFilePaths(roots, input$btn)$datapath)
-    })
-    observeEvent(input$btn_dir, if (is.list(input$btn_dir)) { sel(character()); set_txt(parseDirPath(roots, input$btn_dir)) })
+    observeEvent(input$btn, br$open(if (type == "dir") "dir" else "file", if (type == "dir") "Choose a folder" else if (multiple) "Choose files" else "Choose a file",
+                                    exts = filetypes, multiple = multiple && type != "dir", start = isolate(input$txt), cb = function(p) apply_paths(p)))
+    observeEvent(input$btn_dir, br$open("dir", "Choose a folder", start = isolate(input$txt), cb = function(p) { sel(character()); set_txt(p[1]) }))
 
     # ---- drag and drop: find the dropped file(s) on this computer; if they cannot be found and are small, take a copy ----
     observeEvent(input$dropped, {

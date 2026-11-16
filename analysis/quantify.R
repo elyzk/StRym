@@ -1,5 +1,5 @@
 # analysis/quantify.R -- step 1 when you start from raw reads: FASTQ -> counts table.
-# Runs the same Tuxedo pipeline as the TUX tab (fastq-mcf -> HISAT2 | samtools -> Cufflinks -> Cuffmerge -> Cuffdiff, see
+# Runs the same Tuxedo pipeline as the TUX tab (fastq-mcf or fastp -> HISAT2 | samtools -> Cufflinks -> Cuffmerge -> Cuffdiff, see
 # tuxedo.R) inside <project>/01_quantification/tux/, then writes
 #   counts.csv        genes x samples raw fragment counts (what DESeq2 and the other steps read)
 #   sample_sheet.csv  sample, condition, time_point, replicate, file (derived from your sheet or the file names)
@@ -55,8 +55,10 @@ strym_step_quantify <- function(ctx) {
   utils::write.csv(ss, file.path(ctx$out_dir, "sample_sheet.csv"), row.names = FALSE)
 
   list(status = "ok",
-       files = c("counts.csv", "sample_sheet.csv", "tux/diff_out/gene_exp.diff", "tux/samples_used.csv"),
-       message = sprintf("%s genes × %d samples counted (Cuffdiff comparison of the groups: tux/diff_out/).",
-                         format(nrow(counts), big.mark = ","), ncol(counts) - 1),
+       files = c("counts.csv", "sample_sheet.csv", "tux/diff_out/gene_exp.diff", "tux/samples_used.csv",
+                 if (file.exists(file.path(tux_out, "rtpstar_inputs", "rtpstar_genes_from_tux.csv"))) c("tux/rtpstar_inputs/rtpstar_genes_from_tux.csv", "tux/rtpstar_inputs/rtpstar_expression_from_tux.csv")),
+       message = sprintf("%s genes × %d samples counted (Cuffdiff comparison of the groups: tux/diff_out/).%s",
+                         format(nrow(counts), big.mark = ","), ncol(counts) - 1,
+                         if (file.exists(file.path(tux_out, "rtpstar_inputs", "rtpstar_genes_from_tux.csv"))) " A genes file and an expression file for RTP-STAR are in tux/rtpstar_inputs/." else ""),
        data_path = file.path(ctx$out_dir, "counts.csv"), sample_sheet = file.path(ctx$out_dir, "sample_sheet.csv"))
 }

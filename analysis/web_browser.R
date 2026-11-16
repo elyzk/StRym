@@ -12,9 +12,18 @@
 library(shiny); library(DT)
 root <- normalizePath("..")                                    # the project folder
 addResourcePath("proj", root)
-files <- function(pattern) {
-  f <- list.files(root, pattern = pattern, recursive = TRUE, ignore.case = TRUE)
-  f[!grepl("^07_interactive_browser/", f)]
+files <- function(pattern) {                                   # only what the analysis steps wrote (the numbered folders), not the other files of the folder
+  tops <- list.dirs(root, recursive = FALSE, full.names = FALSE)
+  tops <- tops[grepl("^[0-9]{2}_", tops) & !tops %in% c("00_design", "07_interactive_browser")]
+  f <- unlist(lapply(tops, function(d) file.path(d, list.files(file.path(root, d), pattern = pattern, recursive = TRUE, ignore.case = TRUE))))
+  if (is.null(f)) character() else sort(f)
+}
+read_tab <- function(f) {                                      # csv / tsv, or a network .txt (GENIST: tab-separated; RTP-STAR: "A activates B" lines)
+  if (grepl("\\.txt$", f, ignore.case = TRUE)) {
+    if (!grepl("\t", readLines(f, n = 1, warn = FALSE), fixed = TRUE)) return(read.table(f, sep = " ", header = FALSE, fill = TRUE, stringsAsFactors = FALSE, quote = ""))
+    return(read.delim(f, sep = "\t"))
+  }
+  read.delim(f, sep = if (grepl("\\.tsv$", f, ignore.case = TRUE)) "\t" else ",")
 }
 summary_file <- file.path(root, "run_summary.csv")
 
@@ -25,7 +34,7 @@ ui <- fluidPage(
     tabPanel("Summary", br(), DTOutput("summary")),
     tabPanel("Plots", br(), selectInput("plot", "Plot", choices = files("\\.(png|svg|jpg|jpeg)$"), width = "100%"),
              uiOutput("img")),
-    tabPanel("Tables", br(), selectInput("tab", "Table", choices = files("\\.(csv|tsv)$"), width = "100%"),
+    tabPanel("Tables", br(), selectInput("tab", "Table", choices = files("(\\.(csv|tsv)$)|((network|cytoscape|biograph).*\\.txt$)"), width = "100%"),
              DTOutput("table"))
   )
 )
@@ -39,7 +48,7 @@ server <- function(input, output, session) {
   output$table <- renderDT({
     req(input$tab)
     f <- file.path(root, input$tab)
-    datatable(read.delim(f, sep = if (grepl("\\.tsv$", f)) "\t" else ","), rownames = FALSE, options = list(pageLength = 15, scrollX = TRUE))
+    datatable(read_tab(f), rownames = FALSE, options = list(pageLength = 15, scrollX = TRUE))
   })
 }
 shinyApp(ui, server)
@@ -122,34 +131,63 @@ document.querySelectorAll('#nav button').forEach(function(b){b.onclick=function(
 })();
 </script></body></html>)---"
 
-.browser_files <- function(pd, pattern) {
-  f <- list.files(pd, pattern = pattern, recursive = TRUE, ignore.case = TRUE)
-  f[!grepl("^(07_interactive_browser|00_design)/", f) & !grepl("^run_summary\\.csv$", f)]
+# The files the browser shows: what the steps wrote in their numbered folders (strym_result_files), plus, when asked, whole result folders from
+# elsewhere (e.g. a GENIST or RTP-STAR tab run saved outside the project): they appear as extra_results/<folder name>/...
+# Returns data.frame(path = full path, name = name shown).
+.browser_files <- function(pd, pattern, extra = character()) {
+  inp <- strym_result_files(pd, pattern)
+  out <- data.frame(path = file.path(pd, inp), name = inp, stringsAsFactors = FALSE)
+  for (e in extra[nzchar(extra) & dir.exists(extra)]) {
+    e <- normalizePath(e, winslash = "/"); if (identical(e, normalizePath(pd, winslash = "/", mustWork = FALSE))) next
+    rel <- list.files(e, pattern = pattern, recursive = TRUE, ignore.case = TRUE)
+    if (length(rel)) out <- rbind(out, data.frame(path = file.path(e, rel), name = file.path("extra_results", basename(e), rel), stringsAsFactors = FALSE))
+  }
+  out[!duplicated(normalizePath(out$path, winslash = "/", mustWork = FALSE)), , drop = FALSE]
 }
 
-# Build <out_file>: everything the project folder holds (plots, tables) in one self-contained page.
+# One table from a result file: csv / tsv, or a network .txt (GENIST: tab-separated with a header; RTP-STAR: "A activates B [proportion]" lines).
+.browser_read_table <- function(p, max_rows) {
+  if (grepl("\\.txt$", p, ignore.case = TRUE)) {
+    first <- readLines(p, n = 1, warn = FALSE)
+    if (!length(first) || !nzchar(first)) return(NULL)
+    if (!grepl("\t", first, fixed = TRUE)) {                                            # RTP-STAR edge list
+      l <- trimws(readLines(p, n = max_rows, warn = FALSE)); l <- l[nzchar(l)]; if (!length(l)) return(NULL)
+      pp <- strsplit(l, " ", fixed = TRUE); k <- max(lengths(pp))
+      m <- t(vapply(pp, function(x) c(x, rep("", k - length(x)))[seq_len(k)], character(k)))
+      if (k == 1) m <- matrix(m, ncol = 1)
+      df <- as.data.frame(m, stringsAsFactors = FALSE); names(df) <- c("regulator", "effect", "target", "proportion_of_runs", paste0("V", seq_len(max(0, k - 4))))[seq_len(k)]
+      return(df)
+    }
+    return(utils::read.delim(p, sep = "\t", nrows = max_rows, colClasses = "character", check.names = FALSE, stringsAsFactors = FALSE, quote = "", comment.char = "", na.strings = character()))
+  }
+  sep <- if (grepl("\\.tsv$", p, ignore.case = TRUE)) "\t" else ","
+  utils::read.delim(p, sep = sep, nrows = max_rows, colClasses = "character", check.names = FALSE, stringsAsFactors = FALSE, quote = "\"", comment.char = "", na.strings = character())
+}
+
+# Build <out_file>: everything the analysis steps wrote (plots, tables) in one self-contained page.
 # Plots are embedded as images (up to `max_img_mb` in total); tables keep their first `max_rows` rows.
-strym_browser_html <- function(project_dir, design, out_file, max_img_mb = 40, max_rows = 1000, max_table_mb = 25, app_dir = NULL) {
+strym_browser_html <- function(project_dir, design, out_file, max_img_mb = 40, max_rows = 1000, max_table_mb = 25, app_dir = NULL, extra_dirs = character()) {
   d <- strym_normalize_design(design)
   mime <- c(png = "image/png", jpg = "image/jpeg", jpeg = "image/jpeg", svg = "image/svg+xml")
   budget <- max_img_mb * 1024^2; plots <- list()
-  for (f in .browser_files(project_dir, "\\.(png|jpe?g|svg)$")) {
-    p <- file.path(project_dir, f); sz <- file.size(p); if (is.na(sz)) next
+  pf <- .browser_files(project_dir, "\\.(png|jpe?g|svg)$", extra_dirs)
+  for (k in seq_len(nrow(pf))) {
+    f <- pf$name[k]; p <- pf$path[k]; sz <- file.size(p); if (is.na(sz)) next
     if (sz > budget) { plots[[length(plots) + 1]] <- list(name = f, src = "", note = "Too large to embed: open it from the project folder."); next }
     budget <- budget - sz
     plots[[length(plots) + 1]] <- list(name = f, src = paste0("data:", mime[[tolower(tools::file_ext(f))]], ";base64,",
                                                               gsub("\n", "", jsonlite::base64_enc(readBin(p, "raw", sz)))))
   }
   tables <- list()
-  for (f in .browser_files(project_dir, "\\.(csv|tsv)$")) {
-    p <- file.path(project_dir, f); sz <- file.size(p)
+  tf <- .browser_files(project_dir, paste0("(\\.(csv|tsv)$)|", STRYM_NETWORK_TXT), extra_dirs)      # tables, and the network .txt files of GENIST / RTP-STAR
+  for (k in seq_len(nrow(tf))) {
+    f <- tf$name[k]; p <- tf$path[k]; sz <- file.size(p)
     if (!is.na(sz) && sz > max_table_mb * 1024^2) { message(sprintf("Note: %s (%.0f MB) is too large to embed in the browser file; it stays in the project folder.", f, sz / 1024^2)); next }
     if (is.na(sz) || sz == 0) next
-    sep <- if (grepl("\\.tsv$", f, ignore.case = TRUE)) "\t" else ","
-    df <- tryCatch(utils::read.delim(p, sep = sep, nrows = max_rows, colClasses = "character", check.names = FALSE,
-                                     stringsAsFactors = FALSE, quote = "\"", comment.char = "", na.strings = character()), error = function(e) NULL)
+    df <- tryCatch(.browser_read_table(p, max_rows), error = function(e) NULL)
     if (is.null(df) || !ncol(df)) next
-    total <- length(readLines(p, warn = FALSE)) - 1L
+    headerless <- grepl("\\.txt$", p, ignore.case = TRUE) && !grepl("\t", readLines(p, n = 1, warn = FALSE), fixed = TRUE)
+    total <- sum(nzchar(trimws(readLines(p, warn = FALSE)))) - if (headerless) 0L else 1L     # a blank line at the end is not a row
     m <- as.matrix(df)
     tables[[length(tables) + 1]] <- list(name = f, cols = names(df), total = total,
                                          rows = lapply(seq_len(nrow(m)), function(i) unname(m[i, ])))
@@ -172,7 +210,8 @@ strym_browser_html <- function(project_dir, design, out_file, max_img_mb = 40, m
 
 strym_step_web_browser <- function(ctx) {
   dir.create(ctx$out_dir, recursive = TRUE, showWarnings = FALSE)
-  html <- strym_browser_html(ctx$project_dir, ctx$design, file.path(ctx$out_dir, "strym_browser.html"), app_dir = ctx$app_dir)
+  extra <- strym_split_list(strym_normalize_params(ctx$design$params)$browser_extra)            # result folders from elsewhere (e.g. a GENIST / RTP-STAR tab run)
+  html <- strym_browser_html(ctx$project_dir, ctx$design, file.path(ctx$out_dir, "strym_browser.html"), app_dir = ctx$app_dir, extra_dirs = extra)
   writeLines(trimws(.BROWSER_APP, "left"), file.path(ctx$out_dir, "app.R"))
   writeLines(c("StRym results browser", "",
                "strym_browser.html  : ONE self-contained file. Double-click it to open it in any browser (no internet, R or StRym needed).",
@@ -185,5 +224,5 @@ strym_step_web_browser <- function(ctx) {
              file.path(ctx$out_dir, "README.txt"))
   ctx$log(sprintf("Interactive browser: strym_browser.html written (%d plots, %d tables embedded)", html$plots, html$tables))
   list(status = "ok", files = c("strym_browser.html", "app.R", "README.txt"),
-       message = sprintf("Self-contained strym_browser.html written (%d plots, %d tables): open or share it. The live Shiny version is a template.", html$plots, html$tables))
+       message = sprintf("Self-contained strym_browser.html written (%d plots, %d tables): open or share it. A simple live version (app.R) is saved beside it.", html$plots, html$tables))
 }

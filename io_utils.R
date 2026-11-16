@@ -101,6 +101,52 @@ output_overwrites_input <- function(inputs, outputs) {
   p
 }
 
+# A name that is safe in a file name: letters, digits, . _ - only; runs of anything else become one "_".
+strym_safe_name <- function(x, fallback = "project") {
+  n <- gsub("^_+|_+$", "", gsub("[^A-Za-z0-9._-]+", "_", trimws(as.character(x)[1])))
+  if (is.na(n) || !nzchar(n)) fallback else n
+}
+
+# Informative name of a network table for Cytoscape: <project>_<comparison>_<method>_network_for_Cytoscape.txt
+#   strym_network_filename("Heat shock", "GENIST", "Heat_vs_Control")  ->  "Heat_shock_Heat_vs_Control_GENIST_network_for_Cytoscape.txt"
+strym_network_filename <- function(project, method, what = "") {
+  parts <- c(strym_safe_name(project, ""), if (nzchar(what)) strym_safe_name(what, ""), method, "network_for_Cytoscape")
+  paste0(paste(parts[nzchar(parts)], collapse = "_"), ".txt")
+}
+
+# A quick picture of a network (a sanity check, not a figure for a paper): PNG next to the results, shown in the interactive browser.
+# edges = data.frame(from, to, type = activates|inhibits|regulates, weight). Never stops the analysis: returns FALSE when it cannot draw.
+strym_network_png <- function(edges, file, title = "", max_edges = 1500, size = 1500) {
+  tryCatch({
+    if (!requireNamespace("igraph", quietly = TRUE) || is.null(edges) || !nrow(edges)) return(FALSE)
+    edges <- edges[!is.na(edges$from) & !is.na(edges$to), , drop = FALSE]
+    if (!nrow(edges)) return(FALSE)
+    w <- suppressWarnings(as.numeric(edges$weight)); w[!is.finite(w)] <- 1; edges$weight <- w
+    total <- nrow(edges)
+    if (total > max_edges) edges <- edges[order(-edges$weight, method = "radix")[seq_len(max_edges)], , drop = FALSE]    # a hairball of thousands of edges tells nothing: strongest only
+    g <- igraph::graph_from_data_frame(data.frame(from = edges$from, to = edges$to), directed = TRUE)
+    n <- igraph::vcount(g)
+    set.seed(1)
+    lay <- if (n <= 400) igraph::layout_with_fr(g, niter = 300) else if (n <= 3000) igraph::layout_with_drl(g) else igraph::layout_randomly(g)
+    outdeg <- igraph::degree(g, mode = "out")
+    vs <- 3 + 9 * sqrt(outdeg / max(1, max(outdeg)))
+    cols <- c(activates = "#6F7D1C", inhibits = "#4156A1", regulates = "#9A9A9A")
+    ec <- unname(cols[as.character(edges$type)]); ec[is.na(ec)] <- "#9A9A9A"
+    lw <- 0.5 + 2.5 * edges$weight / max(edges$weight, 1e-12)
+    lab_n <- if (n <= 60) n else 15                                                    # all names when few; only the main regulators when many
+    lab <- rep(NA_character_, n); top <- order(-outdeg, method = "radix")[seq_len(min(lab_n, n))]; lab[top] <- igraph::V(g)$name[top]
+    grDevices::png(file, width = size, height = size, res = 150)
+    on.exit(grDevices::dev.off(), add = TRUE)
+    graphics::par(mar = c(0.5, 0.5, 2.5, 0.5))
+    plot(g, layout = lay, vertex.size = vs, vertex.color = "#BFCC46", vertex.frame.color = "#6F7D1C", vertex.label = lab, vertex.label.cex = if (n <= 60) 0.8 else 0.7,
+         vertex.label.color = "#1F2433", vertex.label.dist = 0.4, edge.color = ec, edge.width = lw, edge.arrow.size = if (n <= 200) 0.4 else 0.2,
+         edge.curved = if (n <= 60) 0.15 else 0, main = "")
+    graphics::title(main = sprintf("%s%s", title, if (total > nrow(edges)) sprintf(" (strongest %d of %d edges shown)", nrow(edges), total) else ""), cex.main = 1)
+    graphics::legend("bottomleft", legend = c("activates", "inhibits", "direction not determined"), col = unname(cols), lwd = 3, bty = "n", cex = 0.8)
+    TRUE
+  }, error = function(e) { message("Note: the network picture could not be drawn (", conditionMessage(e), ")."); FALSE })
+}
+
 # Case-sensitive, locale-independent ordering (matches MATLAB's sort on cellstr).
 c_sort <- function(x) x[order(x, method = "radix")]
 c_unique_sort <- function(x) c_sort(unique(x))

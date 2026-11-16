@@ -41,7 +41,7 @@ strym_default_design <- function() list(
 # Defaults are the ones of the baseline scripts. Everything can be changed in "Analysis settings" on the design page.
 strym_default_params <- function() list(
   control = "",                  # name(s) of the control condition(s), comma separated; blank = detect from control_pattern
-  control_pattern = "control|ctrl|mock|untreated|wild.?type|^wt$|^ck$|baseline|reference",
+  control_pattern = "control|ctrl|(^|[^a-z])ctl([^a-z]|$)|mock|untreated|wild.?type|^wt$|^ck$|baseline|reference",
   pairs = "",                    # advanced: "Heat:Control, Heat2:Control2" (treated:control); overrides automatic pairing
   baseline_first = TRUE,         # the first time point is a baseline (before treatment): reported, never called
   min_fpkm = 2,                  # a gene must reach this mean FPKM in some sample
@@ -56,6 +56,10 @@ strym_default_params <- function() list(
   drop_reps = "",                # samples to leave out of every step (comma separated sample names, e.g. PCA outliers)
   tux_fresh = FALSE,             # TRUE = ignore the finished parts of an earlier Tux run and start it from scratch
   pca_genes = 500, pca_min_mean = 1,
+  browser_extra = "",            # interactive browser: more result folders to include (comma separated), e.g. a GENIST / RTP-STAR tab run saved outside the project
+  pca_level = "replicate",       # PCA: "replicate" (every sample is a point) | "average" (replicates averaged per condition and time point) | "both"
+  entropy_heatmaps = TRUE,       # Shannon / modified Shannon entropy: also draw a pheatmap of the called genes (log2 fold change per time point)
+  heatmap_max_genes = 100,       # ... at most this many genes per comparison (the strongest first; the heatmap shrinks its labels as genes grow)
   genist_max_genes = 500,        # GENIST step: at most this many genes in the network (strongest entropy genes first; 0 = no limit)
   genist_tf_file = "",           # GENIST step: list of transcription-factor ids (first column); blank = every gene may regulate (slow for many genes)
   trajectory_genes = "", trajectory_max = 24,
@@ -76,6 +80,8 @@ strym_normalize_params <- function(p) {
               else trimws(as.character(v))
   }
   if (!p$sc_integration %in% c("none", "cca", "rpca", "harmony")) p$sc_integration <- "cca"
+  p$pca_level <- tolower(p$pca_level); if (!p$pca_level %in% c("replicate", "average", "both")) p$pca_level <- "replicate"
+  if (!is.finite(p$heatmap_max_genes) || p$heatmap_max_genes < 2) p$heatmap_max_genes <- base$heatmap_max_genes
   p[names(base)]
 }
 
@@ -102,6 +108,20 @@ strym_normalize_design <- function(d) {
   d$threads <- suppressWarnings(as.integer(d$threads)); if (is.na(d$threads) || d$threads < 1) d$threads <- 1L
   d
 }
+
+# The result files of a project that StRym shows (the Results list of the design page and the interactive browser): only what the analysis steps
+# wrote into their own numbered folders (01_..., 02_..., ...), never the other files of the output folder (a researcher may well pick Downloads
+# or Documents as the output folder), nor the design record, the browser itself or the Tux internals.
+strym_result_files <- function(project_dir, pattern) {
+  if (!nzchar(project_dir) || !dir.exists(project_dir)) return(character())
+  tops <- list.dirs(project_dir, recursive = FALSE, full.names = FALSE)
+  tops <- tops[grepl("^[0-9]{2}_", tops) & !tops %in% c("00_design", "07_interactive_browser")]
+  f <- unlist(lapply(tops, function(d) file.path(d, list.files(file.path(project_dir, d), pattern = pattern, recursive = TRUE, ignore.case = TRUE))))
+  f <- f[!grepl("^01_quantification/tux/", f)]
+  if (is.null(f)) character() else sort(f)
+}
+# a table file of network results written by GENIST / RTP-STAR (a .txt, not .csv / .tsv)
+STRYM_NETWORK_TXT <- "(network|cytoscape|biograph).*\\.txt$"
 
 # Where the quantification step leaves its counts table (used by every later step when starting from raw reads).
 strym_counts_path <- function(design) file.path(design$project_dir, "01_quantification", "counts.csv")
@@ -142,7 +162,7 @@ strym_blocked <- function(design, selected) {
     if (length(s$needs_any) && !(is.function(s$needs_unless) && isTRUE(s$needs_unless(d)))) {
       pool <- if (identical(s$needs_any, "*")) setdiff(selected, s$id) else intersect(s$needs_any, selected)
       if (!length(pool) && !length(strym_existing_prereq(d, s))) out[s$id] <- if (identical(s$needs_any, "*")) "Needs at least one analysis step to be selected."
-        else paste0("Needs one of: ", paste(lab[s$needs_any], collapse = ", "), ".")
+        else paste0("Needs one of: ", paste(lab[s$needs_any], collapse = ", "), " (tick one of them, or give a gene list in Analysis settings).")
     }
   }
   out
@@ -176,6 +196,8 @@ strym_check_selection <- function(design, selected) {
   lab <- setNames(vapply(strym_steps(), `[[`, "", "label"), vapply(strym_steps(), `[[`, "", "id"))
   for (i in names(b)) warns <- c(warns, sprintf("%s: %s It will be skipped.", lab[[i]], b[[i]]))
   if (length(b) == length(selected)) errs <- c(errs, "None of the selected steps can run for this experiment.")
+  if ("genist_network" %in% selected && !"genist_network" %in% names(b) && !nzchar(strym_normalize_params(design$params)$genist_tf_file))
+    warns <- c(warns, "GENIST without a transcription factor list (optional): every gene may regulate every other, so the network takes longer to infer, much longer beyond about 100 genes. Add a list in Analysis settings to speed it up.")
   list(errors = errs, warnings = warns)
 }
 
@@ -205,6 +227,26 @@ strym_peek_data_uncached <- function(path) {
   if (ext %in% c("xlsx", "xls")) return(sprintf("Excel workbook (%s)", size))
   sprintf("%s file (%s)", if (nzchar(ext)) toupper(ext) else "data", size)
 }
+
+# What the numbers of a counts table are, for the plan (which steps can run): the unit the researcher chose, or, for "work it out", what the first rows say.
+# A table whose values have decimals (FPKM / TPM / CPM) is "normalized"; whole numbers are taken as "auto" (= raw counts). Looked at once per file.
+# Excel files are not peeked at (reading them is slow): the run itself decides then.
+.unit_cache <- new.env()
+.guess_unit <- function(path) {
+  if (!is.character(path) || length(path) != 1 || is.na(path) || !nzchar(path) || !file.exists(path) || dir.exists(path)) return("auto")
+  info <- file.info(path); key <- paste(path, info$size, format(info$mtime, "%s")); hit <- .unit_cache[[key]]
+  if (!is.null(hit)) return(hit)
+  ext <- tolower(tools::file_ext(sub("\\.gz$", "", path, ignore.case = TRUE)))
+  res <- "auto"
+  if (ext %in% c("csv", "tsv", "txt", "tab")) res <- tryCatch({
+    con <- if (grepl("\\.gz$", path, ignore.case = TRUE)) gzfile(path, "r") else file(path, "r"); l <- readLines(con, n = 401, warn = FALSE); close(con)
+    tf <- tempfile(fileext = paste0(".", ext)); writeLines(l, tf); on.exit(unlink(tf), add = TRUE)
+    tab <- read_table_any(tf); v <- unlist(lapply(tab[-1], .to_num), use.names = FALSE); v <- v[is.finite(v)]
+    if (length(v) && mean(v != floor(v)) >= 0.001) "normalized" else "auto"
+  }, error = function(e) "auto")
+  assign(key, res, envir = .unit_cache); res
+}
+strym_unit_of <- function(d) if (identical(d$data_kind, "counts") && identical(d$expr_unit, "auto")) .guess_unit(d$data_path) else d$expr_unit
 
 # Read a sample sheet (csv/tsv/xlsx) or return an error object.
 strym_read_sample_sheet <- function(path) {
@@ -266,7 +308,10 @@ strym_validate_design <- function(design, check_paths = TRUE) {
           if (is.na(cc)) errs <- c(errs, "The sample sheet needs a column named “condition”.")
           else { nc <- length(unique(ss[[cc]]))
                  info <- c(info, sprintf("Sample sheet: %d samples, %d conditions.", nrow(ss), nc))
-                 if (nc != d$n_conditions) warns <- c(warns, sprintf("The sample sheet has %d conditions but you set %d.", nc, d$n_conditions)) }
+                 if (nc != d$n_conditions) warns <- c(warns, sprintf("The sample sheet has %d conditions but you set %d.", nc, d$n_conditions))
+                 typed <- setdiff(tolower(d$condition_names), tolower(trimws(as.character(ss[[cc]]))))                  # a typo in a condition name (draught for drought) must not pass unnoticed
+                 if (length(typed)) warns <- c(warns, sprintf("You typed the condition name%s %s, but the sample sheet has: %s.", if (length(typed) == 1) "" else "s",
+                                                              paste(d$condition_names[tolower(d$condition_names) %in% typed], collapse = ", "), paste(utils::head(unique(ss[[cc]]), 8), collapse = ", "))) }
           sc <- .find_col(ss, "^sample")
           if (is.na(sc) && identical(d$data_kind, "counts")) errs <- c(errs, sprintf("The sample sheet needs a column named 'sample' holding the column names of the table (it has: %s).", paste(utils::head(names(ss), 6), collapse = ", ")))
           if (!is.na(sc) && identical(d$data_kind, "counts")) {
@@ -284,7 +329,10 @@ strym_validate_design <- function(design, check_paths = TRUE) {
           }
           if (!is.na(tc)) { nt <- length(unique(ss[[tc]]))
                  info <- c(info, sprintf("Sample sheet: %d time point%s.", nt, if (nt == 1) "" else "s"))
-                 if (nt != d$n_timepoints) warns <- c(warns, sprintf("The sample sheet has %d time points but you set %d.", nt, d$n_timepoints)) }
+                 if (nt != d$n_timepoints) warns <- c(warns, sprintf("The sample sheet has %d time points but you set %d.", nt, d$n_timepoints))
+                 typed <- setdiff(tolower(d$timepoint_names), tolower(trimws(as.character(ss[[tc]]))))
+                 if (length(typed) && d$n_timepoints > 1) warns <- c(warns, sprintf("You typed the time-point name%s %s, but the sample sheet has: %s.", if (length(typed) == 1) "" else "s",
+                                                              paste(d$timepoint_names[tolower(d$timepoint_names) %in% typed], collapse = ", "), paste(utils::head(unique(ss[[tc]]), 8), collapse = ", "))) }
           else if (d$n_timepoints > 1) warns <- c(warns, "The sample sheet has no “time_point” column although you have several time points.")
         }
       }
@@ -666,6 +714,16 @@ strym_run <- function(design, steps = NULL, app_dir = ".", progress = function(p
 
   pd <- d$project_dir; dir.create(file.path(pd, "00_design"), recursive = TRUE, showWarnings = FALSE)
   dir.create(file.path(pd, "06_regulatory_networks"), showWarnings = FALSE)
+  # A counts table without a sample sheet: the Experimental Design page drafts one from the column names (control_rep1, control_rep2 -> condition "control",
+  # replicates 1 and 2) and uses it. A run started without the page (run_analysis_cli.R, the R functions) gets the same draft, so both give the same groups;
+  # without it every column would be a condition of its own and DESeq2 would find "no replicates".
+  if (identical(d$data_kind, "counts") && !nzchar(d$sample_sheet) && nzchar(d$data_path) && file.exists(d$data_path) && !dir.exists(d$data_path)) {
+    a <- tryCatch(strym_auto_sample_sheet(d), error = function(e) NULL)
+    if (!is.null(a) && is.data.frame(a$sheet) && nrow(a$sheet)) {
+      f <- file.path(pd, "00_design", "sample_sheet_drafted_by_strym.csv"); utils::write.csv(a$sheet, f, row.names = FALSE); d$sample_sheet <- f
+      log(sprintf("No sample sheet was given: StRym drafted one from the column names (%d samples, %d conditions). It is saved in %s.", nrow(a$sheet), length(unique(a$sheet$condition)), f))
+    }
+  }
   jsonlite::write_json(d, file.path(pd, "00_design", "design.json"), auto_unbox = TRUE, pretty = TRUE)
   plan <- strym_plan(d); plan$selected <- plan$id %in% steps
   utils::write.csv(plan[, c("id", "label", "group", "applicable", "default", "selected", "note")], file.path(pd, "00_design", "plan.csv"), row.names = FALSE)
@@ -692,7 +750,7 @@ strym_run <- function(design, steps = NULL, app_dir = ".", progress = function(p
       res$message <- "Skipped: the reads could not be quantified, so there are no counts to analyse."
     } else if (length(s$needs_any) && !identical(s$needs_any, "*") && !length(intersect(s$needs_any, done)) && !length(strym_existing_prereq(d, s)) &&
                !(is.function(s$needs_unless) && isTRUE(s$needs_unless(d)))) {
-      res$message <- "Skipped: the step(s) it builds on did not complete."
+      res$message <- "Skipped: it uses the results of an earlier step of this run, and that step did not finish."
     } else {
       if (s$id != "quantify" && dir.exists(out_dir))                      # a re-run replaces the step's earlier results (never the long Tux run)
         unlink(list.files(out_dir, full.names = TRUE, all.files = TRUE, no.. = TRUE), recursive = TRUE)

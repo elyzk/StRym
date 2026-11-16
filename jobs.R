@@ -6,11 +6,19 @@ dir.create(JOB_DIR, showWarnings = FALSE)
 
 # Is process `pid` alive (not a zombie) and really one of ours (command line contains `pattern`)?
 pid_alive_pattern <- function(pid, pattern) {
-  f <- sprintf("/proc/%d/stat", pid)
-  if (!file.exists(f)) return(FALSE)
-  if (sub(".*\\) (.).*", "\\1", readLines(f, warn = FALSE)[1]) == "Z") return(FALSE)
-  cl <- tryCatch(readBin(sprintf("/proc/%d/cmdline", pid), "raw", 4096), error = function(e) raw())
-  grepl(pattern, rawToChar(cl[cl != as.raw(0)]), fixed = TRUE)         # guards against pid reuse
+  if (length(pid) != 1 || is.na(pid)) return(FALSE)
+  f <- sprintf("/proc/%d/stat", as.integer(pid))
+  if (dir.exists("/proc/self")) {                                       # Linux / WSL: read /proc directly (fast)
+    if (!file.exists(f)) return(FALSE)
+    if (sub(".*\\) (.).*", "\\1", readLines(f, warn = FALSE)[1]) == "Z") return(FALSE)
+    cl <- tryCatch(readBin(sprintf("/proc/%d/cmdline", as.integer(pid)), "raw", 4096), error = function(e) raw())
+    return(grepl(pattern, rawToChar(cl[cl != as.raw(0)]), fixed = TRUE))  # guards against pid reuse
+  }
+  out <- tryCatch(suppressWarnings(system2("ps", c("-p", as.integer(pid), "-o", "stat=,command="), stdout = TRUE, stderr = FALSE)),
+                  error = function(e) character())                      # macOS (no /proc): ask ps
+  if (!length(out) || !nzchar(trimws(out[1]))) return(FALSE)
+  if (grepl("^\\s*Z", out[1])) return(FALSE)
+  grepl(pattern, out[1], fixed = TRUE)
 }
 
 # Kill a process and everything it started (children first).

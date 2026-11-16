@@ -5,8 +5,8 @@ about_ui <- function() {
     div(class = "hero", tags$img(src = "leaf.svg", class = "leafbg", alt = ""),
       h1(class = "herologo", tags$img(src = "strym-logo-white.png", alt = "StRym")),
       div(class = "tag", "Streamlined transcriptomic Regulatory mapping"),
-      p("From RNA-seq data to regulatory networks, in one place. Tell StRym about your experiment and it plans the analysis, ",
-        "runs it, and saves everything in a tidy, numbered folder you can refer back to."),
+      p("StRym is a friendly, open-source platform that turns RNA-seq data into regulatory networks and Cytoscape-ready tables. ",
+        "Describe your experiment and it runs the analysis and saves everything, plus an interactive browser, in one tidy folder."),
       actionButton("go_design", "Describe your experiment  →", class = "btn")),
 
     h3("How it works"),
@@ -28,7 +28,7 @@ about_ui <- function() {
     div(class = "card", h4("Good to know"),
       tags$ul(
         tags$li(HTML("Your input data are only ever <em>read</em>; results are written to the folder you choose.")),
-        tags$li(HTML("Hard drive plugged in after the app started? Open the <strong>Drives</strong> tab and press <em>Mount drive</em>.")),
+        tags$li("External drive? Open the Drives tab to see it and, on Windows, to mount it."),
         tags$li("Long analyses run in the background: you can close this page and come back to see the progress."))),
     div(class = "card", h4("Credits"),
       p(class = "hint", "StRym is an R re-implementation of the TuxNet modules. GENIST: M. Angels de Luis Balaguer. RTP-STAR: Natalie M. Clark. ",

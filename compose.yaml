@@ -1,0 +1,15 @@
+services:
+  strym:
+    image: strym:local
+    build:
+      context: .
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:3838:3838"
+    volumes:
+      - ./strym-data:/data
+      - strym-state:/home/strym/.tuxnet_r
+    restart: unless-stopped
+
+volumes:
+  strym-state:

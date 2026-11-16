@@ -9,7 +9,8 @@
 #                (a Tux run, or your own FPKM / counts table); gene ids are replaced by readable names where the data has them
 # No transcription-factor list is needed: without one every gene is a possible regulator (give a TF list in the GENIST tab to restrict it).
 # Output : <step folder>/<treated condition>/inputs/  genist_genes.csv, genist_time_course.csv   (usable in the GENIST tab too)
-#          <step folder>/<treated condition>/results/ cytoscape_table.txt (the network) and GENIST's other files
+#          <step folder>/<treated condition>/results/ <project>_<comparison>_GENIST_network_for_Cytoscape.txt (the network table),
+#                                                     a *_network.png picture, clusters.xlsx and GENIST's other files
 # Input  : bulk time course (>= 3 time points) with entropy results (Cuffdiff q-values) -- the entropy steps must be run in the same go.
 
 .genist_gene_labels <- function(ids, gene_names) {                              # readable name when known and unique, else the id
@@ -58,6 +59,7 @@ strym_step_genist_network <- function(ctx) {
     ctx$sub_progress((i - 1) / nrow(pairs), sprintf("GENIST for %s (%d of %d)", tr, i, nrow(pairs)))
     x <- found[tolower(found$comparison) == tolower(pk) & found$gene %in% genes_all, , drop = FALSE]
     x <- x[order(-x$n_sig_timepoints, x$gene, method = "radix"), , drop = FALSE]; g <- unique(x$gene)
+    n_found <- length(g)
     if (p$genist_max_genes > 0 && length(g) > p$genist_max_genes) g <- g[seq_len(p$genist_max_genes)]
     if (length(g) < 2) { notes <- c(notes, sprintf("%s: only %d gene(s) in the entropy main set, not enough for a network.", tr, length(g))); next }
     tps_i <- tps[vapply(tps, function(t) any(S$condition == tr & S$time_point == t), TRUE)]       # the time points this condition has
@@ -73,11 +75,12 @@ strym_step_genist_network <- function(ctx) {
     utils::write.csv(data.frame(gene = c_sort(unname(lab[g]))), gf, row.names = FALSE)
     utils::write.csv(data.frame(gene = unname(lab[rownames(tc)]), as.data.frame(tc, check.names = FALSE), check.names = FALSE), tf, row.names = FALSE)
     r <- tryCatch(genist_run(gf, tf, tf_file = if (nzchar(tf_file)) tf_file else NULL, output_folder = d_out,
+                             output_file = strym_network_filename(ctx$design$project_name, "GENIST", key),       # e.g. Heat_shock_Heat_vs_Control_GENIST_network_for_Cytoscape.txt
                              time_lapse = 1, fc_thresh = 1.1, time_percent = 0.1, n_levels = 3, low_conn = 0.05, cores = max(1L, min(as.integer(ctx$design$threads), 4L))),
                   error = function(e) e)
     if (inherits(r, "error")) { notes <- c(notes, sprintf("%s: GENIST failed (%s)", tr, conditionMessage(r))); failed_any <- TRUE; next }
     nrun <- nrun + 1L; files <- c(files, file.path(key, "inputs", c("genist_genes.csv", "genist_time_course.csv")), file.path(key, "results", list.files(d_out)))
-    notes <- c(notes, sprintf("%s: network from %d genes over %d time points", tr, length(g), length(tps_i)))
+    notes <- c(notes, sprintf("%s: network from %d genes%s over %d time points", tr, length(g), if (n_found > length(g)) sprintf(" (the %d most often called of the %d in the main set; change the limit in Analysis settings)", length(g), n_found) else "", length(tps_i)))
   }
   if (!nrun && !failed_any) return(list(status = "skipped", files = files, message = paste(c("No network was built:", notes), collapse = " ")))
   if (!nrun) stop(paste(c("No network could be built.", notes), collapse = " "), call. = FALSE)

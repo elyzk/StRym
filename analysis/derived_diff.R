@@ -23,7 +23,7 @@ strym_ensure_diff <- function(data, ctx) {
 
 strym_derive_possible <- function(d) {                       # "" = can be done for this design, otherwise why not (used by the plan)
   if (!identical(d$data_kind, "counts") && !(identical(d$data_kind, "fastq") && identical(d$read_platform, "long"))) return("Only for an expression table or long reads.")
-  if (identical(d$expr_unit, "normalized"))
+  if (identical(strym_unit_of(d), "normalized"))
     return("The table holds normalized values (FPKM / TPM), from which q-values cannot be calculated: add your Cuffdiff results, or give raw counts.")
   if (!requireNamespace("DESeq2", quietly = TRUE)) return("The DESeq2 package is not installed.")
   sh <- if (nzchar(d$sample_sheet) && file.exists(d$sample_sheet)) strym_read_sample_sheet(d$sample_sheet) else NULL
@@ -98,7 +98,7 @@ strym_derive_diff <- function(m, samples, params, tp_names = character(), cache_
   if (!length(parts) || !any(vapply(parts, function(d) any(d$status == "OK"), TRUE)))
     stop("No treated-vs-control comparison could be made: ", paste(why, collapse = "; "), ".", call. = FALSE)
   de <- do.call(rbind, parts); attr(de, "skipped") <- why
-  log(sprintf("q-values: %d of %d treated-vs-control comparisons calculated with DESeq2 (%s genes tested in total).", length(parts), nrow(jobs), format(nrow(de), big.mark = ",")))
+  log(sprintf("q-values: %d of %d treated-vs-control comparisons calculated with DESeq2 (%s genes tested in each).", length(parts), nrow(jobs), format(if ("test_id" %in% names(de)) length(unique(de$test_id)) else nrow(de), big.mark = ",")))
   if (length(why)) log(sprintf("Comparisons that could not be made (their q-values are 1): %s.", paste(why, collapse = "; ")))
   if (nzchar(cache_file)) tryCatch({ dir.create(dirname(cache_file), recursive = TRUE, showWarnings = FALSE); saveRDS(list(key = key, diff = de), cache_file) }, error = function(e) NULL)
   de

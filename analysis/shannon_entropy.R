@@ -16,7 +16,7 @@ strym_step_shannon_entropy <- function(ctx) {
   if (is.null(data$diff)) stop("Shannon entropy needs q-values for treated vs control: start from raw reads (Tux), give raw counts with replicates, or give your Cuffdiff results (gene_exp.diff files) in 'Differential-expression results'.", call. = FALSE)
   tc <- strym_timecourse(data, p, ctx$design$timepoint_names, log = ctx$log)
   run <- strym_run_shannon(tc, p)
-  files <- strym_write_calls(ctx$out_dir, "shannon", run, tc, "Shannon entropy")
+  files <- strym_write_calls(ctx$out_dir, "shannon", run, tc, "Shannon entropy", params = p)
   for (i in seq_len(nrow(tc$pairs))) {
     r <- run$results[[.pair_keys(tc$pairs)[i]]]
     ctx$log(sprintf("%s vs %s: %d control-variable genes excluded; %d genes called; main set (>= %d time points): %d",

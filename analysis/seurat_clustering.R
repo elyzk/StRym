@@ -164,7 +164,7 @@ MARKER_CELLS <- 1000        # cell cap per group in the marker tests: clusters b
   so <- CreateSeuratObject(counts = sub, project = "de", min.cells = 0, min.features = 0)
   so <- SeuratObject::SetAssayData(so, assay = "RNA", layer = "data", new.data = sub)
   SeuratObject::Idents(so) <- stats::setNames(factor(rep(c("a", "b"), c(length(c1), length(c2))), levels = c("a", "b")), colnames(so))
-  FindMarkers(so, ident.1 = "a", ident.2 = "b", assay = "RNA", test.use = "wilcox", only.pos = only_pos, logfc.threshold = 0.25, min.pct = min_pct, verbose = FALSE)
+  suppressWarnings(FindMarkers(so, ident.1 = "a", ident.2 = "b", assay = "RNA", test.use = "wilcox", only.pos = only_pos, logfc.threshold = 0.25, min.pct = min_pct, verbose = FALSE))   # (ties in the counts make the Wilcoxon test warn "cannot compute exact p-value": it falls back to the normal approximation, which is fine for hundreds of cells)
 }
 .find_all_markers <- function(dat, clusters, log) {
   cl <- sort(unique(as.character(clusters))); res <- list(); set.seed(1)
@@ -246,7 +246,7 @@ strym_step_seurat_clustering <- function(ctx) {
     rm(objs); invisible(gc()); .mem_note(log, "after reading and merging the samples")
   }
   samples <- unique(as.character(obj$sample)); conds <- unique(as.character(obj$condition))
-  if (length(conds) != d$n_conditions) log(sprintf("Note: %d condition%s found in the data (%s) but %d set on the design page.", length(conds), if (length(conds) == 1) "" else "s", paste(conds, collapse = ", "), d$n_conditions))
+  if (length(conds) != d$n_conditions && length(conds) > 1) log(sprintf("Note: %d condition%s found in the data (%s) but %d set on the design page.", length(conds), if (length(conds) == 1) "" else "s", paste(conds, collapse = ", "), d$n_conditions))
 
   # ---- 2. quality control: UMI filter ----
   keep <- obj$nCount_RNA > p$sc_min_counts & (p$sc_max_counts <= 0 | obj$nCount_RNA < p$sc_max_counts)
@@ -357,17 +357,18 @@ strym_step_seurat_clustering <- function(ctx) {
     pairs <- tryCatch(strym_pairs(data.frame(condition = conds), p), error = function(e) { log("Condition effects skipped: ", conditionMessage(e)); NULL })
     if (!is.null(pairs)) {
       mo$cluster_condition <- paste(mo$clusters, mo$condition, sep = "__")
-      res <- list(); n_cc <- table(mo$cluster_condition); cells_cc <- split(colnames(mo), mo$cluster_condition); set.seed(1)
+      res <- list(); n_cc <- table(mo$cluster_condition); cells_cc <- split(colnames(mo), mo$cluster_condition); set.seed(1); skipped <- character()
       for (i in seq_len(nrow(pairs))) for (k in sort(unique(as.character(mo$clusters)))) {
         i1 <- paste(k, pairs$treated[i], sep = "__"); i2 <- paste(k, pairs$control[i], sep = "__")
-        if (is.na(n_cc[i1]) || is.na(n_cc[i2]) || n_cc[i1] < 10 || n_cc[i2] < 10) next          # too few cells in a cluster to compare
+        if (is.na(n_cc[i1]) || is.na(n_cc[i2]) || n_cc[i1] < 10 || n_cc[i2] < 10) { skipped <- union(skipped, k); next }          # too few cells in a cluster to compare
         x <- tryCatch(.de_wilcox(marker_dat, cells_cc[[i1]], cells_cc[[i2]], only_pos = FALSE, min_pct = 0.01), error = function(e) NULL)
         if (!is.null(x) && nrow(x)) res[[length(res) + 1]] <- cbind(gene = rownames(x), cluster = k, comparison = paste0(pairs$treated[i], "_vs_", pairs$control[i]), x, row.names = NULL)
       }
+      if (length(skipped)) log(sprintf("Clusters not compared between conditions (fewer than 10 cells of one of the conditions): %s. If the treatment itself separates cells into their own clusters, integrate the samples (CCA, RPCA or Harmony) to compare the conditions inside a cluster.", paste(skipped, collapse = ", ")))
       if (length(res)) { deg <- do.call(rbind, res); deg <- deg[deg$p_val_adj < 0.05, , drop = FALSE]                   # significant genes only
-                         deg <- deg[order(deg$comparison, deg$cluster, deg$p_val_adj), ]; ndeg <- nrow(deg)
+                         deg <- deg[order(deg$comparison, deg$cluster, deg$p_val_adj), ]; ndeg <- length(unique(deg$gene)); nrows_deg <- nrow(deg)
                          utils::write.csv(deg, file.path(out, "condition_DEGs_by_cluster.csv"), row.names = FALSE); files <- c(files, "condition_DEGs_by_cluster.csv")
-                         log(sprintf("Condition effects: %d genes across clusters (positive log2FC = higher in the treated condition).", ndeg))
+                         log(sprintf("Condition effects: %d different genes (%d gene-by-cluster rows; a gene that changes in two clusters is one gene; positive log2FC = higher in the treated condition).", ndeg, nrows_deg))
       } else log("No genes differed between conditions inside the clusters (or clusters were too small to compare).")
     }
   }

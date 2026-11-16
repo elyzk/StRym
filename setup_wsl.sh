@@ -60,6 +60,7 @@ if [[ "$NEED_BOOTSTRAP_DEPS" == true ]]; then
     fi
     PACKAGES=(curl bzip2 ca-certificates)
     [[ "$OS" == "Linux" ]] && PACKAGES+=(libarchive-tools)
+      echo "Need curl and bzip2 to be installed. Install them manually or enable sudo access to install them automatically."
     $SUDO apt-get update -qq
     $SUDO apt-get install -y -qq "${PACKAGES[@]}" >/dev/null
   elif ! command -v curl >/dev/null 2>&1 || ! command -v bzip2 >/dev/null 2>&1; then

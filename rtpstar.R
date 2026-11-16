@@ -281,6 +281,23 @@ rtpstar_run <- function(genes_file, expression_file, output_folder, output_file 
       writeLines(sprintf("%s %s", edges[keep], format(number[keep] / numiters, digits = 15)), final_path)
     } else writeLines(character(), final_path)
   }
+  l <- trimws(readLines(final_path, warn = FALSE)); l <- l[nzchar(l)]                  # a quick picture for the interactive browser (never stops the run)
+  if (length(l)) {
+    pp <- strsplit(l, " ", fixed = TRUE)
+    e <- data.frame(from = vapply(pp, `[`, "", 1), type = vapply(pp, `[`, "", 2), to = vapply(pp, `[`, "", 3),
+                    weight = vapply(pp, function(x) if (length(x) >= 4) suppressWarnings(as.numeric(x[4])) else NA_real_, numeric(1)), stringsAsFactors = FALSE)
+    strym_network_png(e, sub("\\.[A-Za-z0-9]+$", "_network.png", final_path), sprintf("RTP-STAR network: %d genes, %d edges", length(unique(c(e$from, e$to))), nrow(e)))
+  }
   emit_progress(100, "Done")
   invisible(final_path)
+}
+
+# ---- Inputs built from Tux (Cuffdiff) results ---------------------------------------------------------------------------
+# A genes file (the differentially expressed genes) and an expression file (one column per sample) for the RTP-STAR tab, from a Tux run.
+# `tux_path`: a StRym project folder, its 01_quantification / tux folder, or the Tux diff_out folder (see tux_find_results() in genist.R).
+# The same two files are also written at the end of every Tux run (tux_write_rtpstar_inputs() in tuxedo.R); this builds them again with other cutoffs.
+rtpstar_inputs_from_tux <- function(tux_path, output_folder, q_cutoff = 0.05, min_log2fc = 1, min_fpkm = 1, max_genes = 500) {
+  found <- tux_find_results(tux_path)
+  r <- tux_rtpstar_inputs(found$diff_dir, output_folder, q_cutoff = q_cutoff, min_log2fc = min_log2fc, min_fpkm = min_fpkm, max_genes = max_genes)
+  c(r, list(project_dir = found$project_dir, diff_dir = found$diff_dir))
 }

@@ -228,7 +228,7 @@ tux_groups <- function(found) {
   }
   guessed <- !length(series)
   if (guessed) series <- list(`all groups` = stats::setNames(avail, avail))
-  ctrl <- if (!is.null(found$design$params$control_pattern)) found$design$params$control_pattern else "control|ctrl|mock|untreated|wild.?type|^wt$|^ck$|baseline|reference"
+  ctrl <- if (!is.null(found$design$params$control_pattern)) found$design$params$control_pattern else "control|ctrl|(^|[^a-z])ctl([^a-z]|$)|mock|untreated|wild.?type|^wt$|^ck$|baseline|reference"
   nm <- names(series); not_ctrl <- nm[!grepl(ctrl, nm, ignore.case = TRUE)]
   list(available = avail, series = series, guessed = guessed, default = if (length(not_ctrl)) not_ctrl[1] else nm[1])
 }
@@ -409,6 +409,10 @@ genist_run <- function(genes_file, time_course_file, clustering_file = NULL, tf_
   edges <- genist_edge_table(map_symbols(names_all, sym_df), final, fsgn)
   out_path <- file.path(output_folder, output_file)
   utils::write.table(edges, out_path, sep = "\t", quote = FALSE, row.names = FALSE)
+  e <- edges[edges$width > 0, , drop = FALSE]                                           # a quick picture for the interactive browser (never stops the run)
+  strym_network_png(data.frame(from = e$source, to = e$target, type = ifelse(e$sign > 0, "activates", ifelse(e$sign < 0, "inhibits", "regulates")), weight = e$width,
+                               stringsAsFactors = FALSE),
+                    sub("\\.[A-Za-z0-9]+$", "_network.png", out_path), sprintf("GENIST network: %d genes, %d regulations", length(unique(c(e$source, e$target))), nrow(e)))
   emit_progress(100, "Done")
   invisible(list(edges = edges, clusters = members, output = out_path, network = final, sign = fsgn, genes = names_all))
 }

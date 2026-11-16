@@ -15,7 +15,7 @@ Stephanie M. Stewart; maintained by the Sozzani lab at NC State University (this
 | `analysis/common.R` | shared analysis code: reading Tux (Cuffdiff) output, treated-vs-control pairs, Shannon / MSE algorithms |
 | `analysis/{quantify,deseq2,pca,shannon_entropy,modified_shannon_entropy,trajectory,seurat_clustering,web_browser}.R` | one file per step, `strym_step_<id>(ctx)` |
 | `analysis/baseline_scripts/` | the lab's ORIGINAL scripts (unchanged) the steps were generalized from, used as the reference in tests |
-| `tuxedo.R` | the Tuxedo pipeline (fastq-mcf, HISAT2, samtools, Cufflinks, Cuffmerge, Cuffdiff) incl. space-safe paths and **resume** |
+| `tuxedo.R` | the Tuxedo pipeline (fastq-mcf or optional fastp, HISAT2, samtools, Cufflinks, Cuffmerge, Cuffdiff) incl. space-safe paths and **resume** |
 | `genist.R`, `rtpstar.R`, `mod_genist.R`, `mod_rtpstar.R` | the GENIST and RTP-STAR ports (checked against GENIE3, not yet numerically against the MATLAB originals) |
 | `gui_helpers.R`, `jobs.R`, `drives.R`, `io_utils.R` | path fields with drag and drop, background jobs, WSL drives, readers |
 | `www/strym.css`, `www/strym.js`, `www/leaf.svg` | theme and the drag-and-drop script |
@@ -42,7 +42,7 @@ time points; trajectories need >= 3; PCA and DESeq2 work from a counts table too
 * `jsonlite::validate` masks `shiny::validate`: use `shiny::validate` / `shiny::need`.
 * Calling `wsl ...` from Git Bash rewrites `/mnt/c/...` arguments: set `MSYS_NO_PATHCONV=1`, or put the commands in a script file.
 * The hisat2 launcher breaks on spaces in paths: every path handed to a tool goes through `.safe()` (symlinks with plain names).
-* A drive plugged in after WSL started is not mounted: the Drives tab mounts it. shinyFiles roots must be a fixed vector.
+* Windows drive discovery must not block Browse: `filebrowser.R` renders the last known drive list immediately while `drives.R` refreshes it in the background.
 * Do not let conda "upgrade" the Tuxedo tools: the pins in `setup_*.sh` keep samtools at 1.16.1 (otherwise it downgrades to 1.5).
 * Seurat's `Read10X` only reads the all-gz layout; StRym has its own reader (`.read_10x`). CCA/RPCA need `k.weight` <= the smallest sample's cells.
 * Cuffdiff writes its result tables only at the very end and prints no progress in quiet mode; its testing phase is long.

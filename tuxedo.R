@@ -2,7 +2,7 @@
 #
 # Pipeline (same tools and flags as the MATLAB app):
 #   1. Clean + align, one sample at a time:
-#        ea-utils fastq-mcf -> hisat2 --dta-cufflinks | samtools sort (BAM)
+#        ea-utils fastq-mcf (or fastp, e.g. on macOS) -> hisat2 --dta-cufflinks | samtools sort (BAM)
 #   2. cufflinks (per sample)   3. cuffmerge   4. cuffdiff
 #
 # Designed for very large data on external drives:
@@ -24,7 +24,7 @@
 #
 # Output layout (inside output_folder): Cleaned/ Aligned/ Cufflinks/ merged_asm/ diff_out/
 
-.OUTPUT_DIRS <- c("Cleaned", "Aligned", "Cufflinks", "merged_asm", "diff_out")
+.OUTPUT_DIRS <- c("Cleaned", "Aligned", "Cufflinks", "merged_asm", "diff_out", "rtpstar_inputs")
 .FQ_EXT <- "\\.([Ff][Aa][Ss][Tt][Qq]|[Ff][Qq])(\\.[Gg][Zz])?$"
 
 # Resolve a tool path: <tool_dir>/<rel> if tool_dir is given, else bare name on PATH.
@@ -83,13 +83,28 @@ TOOL_PATHS <- c("ea-utils/clipper/fastq-mcf", "hisat2/hisat2", "hisat2/hisat2-bu
                 "samtools/samtools", "cufflinks/cufflinks", "cufflinks/cuffmerge",
                 "cufflinks/cuffdiff")
 
-# Returns a data.frame(tool, found, path). With tool_dir = NULL, searches PATH.
-check_tools <- function(tool_dir = NULL) {
-  path <- vapply(TOOL_PATHS, function(rel) {
-    if (is.null(tool_dir)) unname(Sys.which(basename(rel)))
+# Read cleaning: "fastq-mcf" (ea-utils, what TuxNet uses; Linux and Windows) or "fastp" (also on macOS). "auto" = fastq-mcf when it is installed, else fastp.
+.find_tool <- function(tool_dir, rel) {
+  if (is.null(tool_dir)) return(unname(Sys.which(basename(rel))))
+  if (file.exists(file.path(tool_dir, rel))) file.path(tool_dir, rel) else unname(Sys.which(basename(rel)))
+}
+pick_cleaner <- function(cleaner = "auto", tool_dir = NULL) {
+  cleaner <- match.arg(cleaner, c("auto", "fastq-mcf", "fastp"))
+  if (cleaner != "auto") return(cleaner)
+  if (nzchar(.find_tool(tool_dir, "ea-utils/clipper/fastq-mcf"))) "fastq-mcf"
+  else if (nzchar(.find_tool(tool_dir, "fastp"))) "fastp" else "fastq-mcf"
+}
+
+# Returns a data.frame(tool, found, path). With tool_dir = NULL, searches PATH. The list holds the read cleaner that will be used (see pick_cleaner).
+check_tools <- function(tool_dir = NULL, cleaner = "auto") {
+  cl <- pick_cleaner(cleaner, tool_dir)
+  rels <- if (cl == "fastp") c("fastp", TOOL_PATHS[-1]) else TOOL_PATHS
+  path <- vapply(rels, function(rel) {
+    if (rel == "fastp") .find_tool(tool_dir, rel)
+    else if (is.null(tool_dir)) unname(Sys.which(basename(rel)))
     else if (file.exists(file.path(tool_dir, rel))) file.path(tool_dir, rel) else ""
   }, character(1))
-  data.frame(tool = basename(TOOL_PATHS), found = nzchar(path), path = unname(path),
+  data.frame(tool = basename(rels), found = nzchar(path), path = unname(path),
              stringsAsFactors = FALSE)
 }
 
@@ -274,7 +289,7 @@ validate_samples <- function(samples, paired, platform = "short") {
         if (nzchar(pm)) errs <- c(errs, sprintf("%s: %s", basename(m), pm))
         else { h1 <- .fq_head(f, 50)$ids; h2 <- .fq_head(m, 50)$ids; n <- min(length(h1), length(h2))
                if (n > 0 && !identical(h1[seq_len(n)], h2[seq_len(n)]))
-                 errs <- c(errs, sprintf("%s and %s do not belong together: their read names differ (re-sorted, from different runs, or wrongly paired).", basename(f), basename(m))) }
+                 warns <- c(warns, sprintf("%s and %s may not belong together: their read names differ (re-sorted, from different runs, or wrongly paired). If you know they do, you can run anyway.", basename(f), basename(m))) }
       }
     }
   }
@@ -342,7 +357,7 @@ check_output_folder <- function(out_folder) {
 #   * Cuffmerge:  merged.gtf is newer than every assembly;     * Cuffdiff:  its result tables exist and are newer than all of the above.
 # Each part also needs the parts before it, so anything uncertain is simply redone. Returns list(align, cufflinks, merge, cuffdiff, why).
 tux_resume_status <- function(samples, out_folder, gtf_file, fasta_file, quality_thresh = 30, min_seq_length = 30, window_size = 5,
-                              paired = FALSE, tool_dir = NULL) {
+                              paired = FALSE, tool_dir = NULL, cleaner = "fastq-mcf") {
   n <- nrow(samples)
   none <- function(why = "") list(align = rep(FALSE, n), cufflinks = rep(FALSE, n), merge = FALSE, cuffdiff = FALSE, why = why)
   if (!dir.exists(out_folder)) return(none("no earlier run found"))
@@ -360,6 +375,7 @@ tux_resume_status <- function(samples, out_folder, gtf_file, fasta_file, quality
   if (file.exists(rec_f) && requireNamespace("jsonlite", quietly = TRUE)) {
     rec <- tryCatch(jsonlite::fromJSON(rec_f), error = function(e) NULL)
     if (is.null(rec) || !identical(as.character(unlist(rec[names(now)])), as.character(now))) return(none("the cleaning settings or the reference differ from the earlier run"))
+    if (!identical(if (is.null(rec$cl)) "fastq-mcf" else as.character(rec$cl), cleaner)) return(none("the read cleaner differs from the earlier run"))
   } else if (!(quality_thresh == 30 && min_seq_length == 30 && window_size == 5))
     return(none("the cleaning settings differ from the defaults used by earlier runs"))
 
@@ -391,13 +407,27 @@ tux_resume_text <- function(st) {
   sprintf("Reusing finished work from an earlier run (%s). Still to do: %s.", paste(done, collapse = ", "), if (length(todo)) paste(todo, collapse = ", ") else "nothing (the run is complete)")
 }
 
+# fastp counterpart of the fastq-mcf call: -q / -l / -w of TuxNet become a sliding-window quality trim from the 3' end (window -w, mean quality -q),
+# a minimum length (-l) and the same adapter file. Pairs stay in step (a read whose mate is dropped is dropped too). The reports go to a temporary
+# folder. fastp reads Phred+33; Phred+64 files are converted (--phred64).
+fastp_args <- function(f, out, adapter_fasta, q, l, w, threads, phred = 33L, mate = NULL, mate_out = NULL) {
+  rep_dir <- tempfile("fastp_report"); dir.create(rep_dir)
+  a <- c("-i", shQuote(f), "-o", shQuote(out))
+  if (!is.null(mate)) a <- c(a, "-I", shQuote(mate), "-O", shQuote(mate_out))
+  c(a, "--adapter_fasta", shQuote(adapter_fasta), "--cut_tail", "--cut_window_size", min(max(as.integer(w), 1L), 1000L), "--cut_mean_quality", q,
+    "--length_required", l, "--thread", min(max(as.integer(threads), 1L), 16L), if (phred == 64L) "--phred64",
+    "--json", shQuote(file.path(rep_dir, "fastp.json")), "--html", shQuote(file.path(rep_dir, "fastp.html")))
+}
+
 # ---- 1. Clean + align, one sample at a time ------------------------------
 clean_and_align <- function(samples, out_folder, fasta_file, adapter_fasta,
                             quality_thresh, min_seq_length, window_size,
-                            threads, paired, tool_dir, keep_cleaned = FALSE, skip = rep(FALSE, nrow(samples))) {
+                            threads, paired, tool_dir, keep_cleaned = FALSE, skip = rep(FALSE, nrow(samples)), cleaner = "auto") {
+  cleaner <- pick_cleaner(cleaner, tool_dir)
   cleaned_dir <- file.path(out_folder, "Cleaned"); dir.create(cleaned_dir, showWarnings = FALSE)
   aligned_dir <- file.path(out_folder, "Aligned"); dir.create(aligned_dir, showWarnings = FALSE)
-  fastq_mcf    <- .tool(tool_dir, "ea-utils/clipper/fastq-mcf")
+  fastq_mcf    <- if (cleaner == "fastp") .find_tool(tool_dir, "fastp") else .tool(tool_dir, "ea-utils/clipper/fastq-mcf")   # (variable name kept: it is "the cleaner")
+  message("Read cleaning with ", cleaner)
   hisat2       <- .tool(tool_dir, "hisat2/hisat2")
   hisat2_build <- .tool(tool_dir, "hisat2/hisat2-build")
   samtools     <- .tool(tool_dir, "samtools/samtools")
@@ -415,13 +445,19 @@ clean_and_align <- function(samples, out_folder, fasta_file, adapter_fasta,
     if (paired) {
       a_out <- file.path(cleaned_dir, sprintf("A_Cleaned%s_%d.fastq", g, k))
       b_out <- file.path(cleaned_dir, sprintf("B_Cleaned%s_%d.fastq", g, k))
-      .run(fastq_mcf, c(shQuote(adapter_fasta), shQuote(f), shQuote(samples$mate_run[i]), common,
+      if (cleaner == "fastp")
+        .run(fastq_mcf, fastp_args(f, a_out, adapter_fasta, quality_thresh, min_seq_length, window_size, threads, .detect_phred(samples$file[i]), mate = samples$mate_run[i], mate_out = b_out),
+             paste("Cleaning", basename(f)))
+      else .run(fastq_mcf, c(shQuote(adapter_fasta), shQuote(f), shQuote(samples$mate_run[i]), common,
                         "-o", shQuote(a_out), "-o", shQuote(b_out)),
            paste("Cleaning", basename(f)))
       reads <- paste("-1", shQuote(a_out), "-2", shQuote(b_out)); cleaned <- c(a_out, b_out)
     } else {
       a_out <- file.path(cleaned_dir, sprintf("Cleaned%s_%d.fastq", g, k))
-      .run(fastq_mcf, c(shQuote(adapter_fasta), shQuote(f), common, "-o", shQuote(a_out)),
+      if (cleaner == "fastp")
+        .run(fastq_mcf, fastp_args(f, a_out, adapter_fasta, quality_thresh, min_seq_length, window_size, threads, .detect_phred(samples$file[i])),
+             paste("Cleaning", basename(f)))
+      else .run(fastq_mcf, c(shQuote(adapter_fasta), shQuote(f), common, "-o", shQuote(a_out)),
            paste("Cleaning", basename(f)))
       reads <- paste("-U", shQuote(a_out)); cleaned <- a_out
     }
@@ -488,6 +524,9 @@ run_cufflinks <- function(samples, out_folder, gtf_file, fasta_file, threads, to
 # ---- 3. Cuffmerge --------------------------------------------------------
 run_cuffmerge <- function(out_folder, gtf_file, fasta_file, threads, tool_dir) {
   cuffmerge <- .tool(tool_dir, "cufflinks/cuffmerge")
+  work <- tempfile(".cuffmerge-", tmpdir = out_folder); dir.create(work)
+  old_wd <- setwd(work)
+  on.exit({ setwd(old_wd); unlink(work, recursive = TRUE) }, add = TRUE)
   .run(cuffmerge, c("-g", shQuote(gtf_file), "-s", shQuote(fasta_file), "-p", threads,
                     "-o", shQuote(file.path(out_folder, "merged_asm")),
                     shQuote(file.path(out_folder, "Cufflinks", "assemblies.txt"))),
@@ -520,7 +559,7 @@ run_cuffdiff <- function(samples, out_folder, fasta_file, threads, tool_dir) {
 #' @param output_folder  where all results/intermediates go (default: inputs_folder/tuxedo_results)
 #' @param read_type      "single" or "paired"
 #' @param samples        optional sample sheet data.frame(group, file[, mate]); default: infer
-#' @param quality_thresh fastq-mcf -q (TuxNet default 30)
+#' @param cleaner  read cleaning program: \
 #' @param min_seq_length fastq-mcf -l (default 30)
 #' @param window_size    fastq-mcf -w (default 5)
 #' @param threads        threads for all tools (default 1)
@@ -535,8 +574,9 @@ run_tuxedo <- function(inputs_folder, gtf_file, fasta_file,
                        quality_thresh = 30, min_seq_length = 30, window_size = 5,
                        threads = 1,
                        adapter_fasta = "IlluminaAdaptorSeq.fasta",
-                       tool_dir = NULL, keep_cleaned = FALSE, skip_space_check = FALSE, resume = FALSE) {
+                       tool_dir = NULL, keep_cleaned = FALSE, skip_space_check = FALSE, resume = FALSE, cleaner = "auto") {
   read_type <- match.arg(read_type)
+  cleaner <- pick_cleaner(cleaner, tool_dir)
   paired <- read_type == "paired"
   output_folder <- normalizePath(output_folder, mustWork = FALSE)
 
@@ -552,8 +592,10 @@ run_tuxedo <- function(inputs_folder, gtf_file, fasta_file,
 
   oc <- check_output_folder(output_folder)
   if (length(oc$errors) || (!resume && length(oc$warnings))) stop(paste(c(oc$errors, oc$warnings), collapse = " "))   # resuming: earlier outputs are expected
-  tools <- check_tools(tool_dir)
-  if (!all(tools$found)) stop("Missing tools: ", paste(tools$tool[!tools$found], collapse = ", "))
+  tools <- check_tools(tool_dir, cleaner)
+  if (!all(tools$found)) stop("Missing tools: ", paste(tools$tool[!tools$found], collapse = ", "),
+                              if (!cleaner %in% tools$tool[tools$found] && cleaner == "fastq-mcf" && !nzchar(.find_tool(tool_dir, "fastp")))
+                                " (install fastp in the tuxnet environment, or use fastq-mcf)" else "")
   v <- validate_samples(samples, paired)
   if (length(v$errors)) stop(paste(c("Input problems:", v$errors), collapse = "\n  "))
   for (w in v$warnings) message("WARNING: ", w)
@@ -573,14 +615,14 @@ run_tuxedo <- function(inputs_folder, gtf_file, fasta_file,
                  fmt_bytes(est$need), fmt_bytes(free)),
          "Choose an output folder on a bigger drive.")
 
-  st <- if (resume) tux_resume_status(samples, output_folder, gtf_file, fasta_file, quality_thresh, min_seq_length, window_size, paired, tool_dir)
+  st <- if (resume) tux_resume_status(samples, output_folder, gtf_file, fasta_file, quality_thresh, min_seq_length, window_size, paired, tool_dir, cleaner)
         else list(align = rep(FALSE, nrow(samples)), cufflinks = rep(FALSE, nrow(samples)), merge = FALSE, cuffdiff = FALSE, why = "")
   if (resume) message(tux_resume_text(st))
   dir.create(output_folder, recursive = TRUE, showWarnings = FALSE)
   write.csv(samples, file.path(output_folder, "samples_used.csv"), row.names = FALSE)
   if (requireNamespace("jsonlite", quietly = TRUE))                          # what this run was made with (checked by a later resume)
     jsonlite::write_json(list(q = quality_thresh, l = min_seq_length, w = window_size, paired = as.integer(paired),
-                              gtf = file.size(gtf_file), fasta = file.size(fasta_file)), file.path(output_folder, "run_params.json"), auto_unbox = TRUE)
+                              gtf = file.size(gtf_file), fasta = file.size(fasta_file), cl = cleaner), file.path(output_folder, "run_params.json"), auto_unbox = TRUE)
 
   # From here on every path given to a tool is space-free (see .safe).
   on.exit(.cleanup_links(), add = TRUE)
@@ -591,7 +633,7 @@ run_tuxedo <- function(inputs_folder, gtf_file, fasta_file,
 
   message("[STEP 1/4] Cleaning and aligning reads")
   clean_and_align(samples, out_run, fasta_run, adapter_run, quality_thresh,
-                  min_seq_length, window_size, threads, paired, tool_dir, keep_cleaned, skip = st$align)
+                  min_seq_length, window_size, threads, paired, tool_dir, keep_cleaned, skip = st$align, cleaner = cleaner)
   message("[STEP 2/4] Assembling transcripts")
   run_cufflinks(samples, out_run, gtf_run, fasta_run, threads, tool_dir, skip = st$cufflinks)
   message("[STEP 3/4] Merging assemblies")
@@ -600,6 +642,7 @@ run_tuxedo <- function(inputs_folder, gtf_file, fasta_file,
   if (st$cuffdiff) message("Cuffdiff already done: reusing it")
   else { unlink(file.path(output_folder, "diff_out"), recursive = TRUE); run_cuffdiff(samples, out_run, fasta_run, threads, tool_dir) }   # never mix with a half-written earlier attempt
 
+  tux_write_rtpstar_inputs(output_folder)                       # the genes file and the expression file RTP-STAR needs (never stops the run)
   message("Done. Results in ", file.path(output_folder, "diff_out"))
   invisible(file.path(output_folder, "diff_out"))
 }
@@ -614,13 +657,19 @@ clear_outputs <- function(out_folder) {
 }
 
 # ---- tools for long reads (see longreads.R) -----------------------------------------------------------------------------
-.mamba_root <- Sys.getenv("MAMBA_ROOT_PREFIX", "")
-if (!nzchar(.mamba_root))
-  .mamba_root <- file.path(path.expand("~"), if (identical(Sys.info()[["sysname"]], "Darwin")) "micromamba" else "mamba")
-.LONG_ENV_BIN <- file.path(.mamba_root, "envs", "longread", "bin")
+# The "longread" environment sits next to the main one. Check an explicit StRym root, micromamba's active root,
+# the locations used by the Linux/WSL, macOS and Docker installers, and the running R environment's sibling.
+.long_env_bins <- function() {
+  roots <- c(Sys.getenv("STRYM_MAMBA_ROOT", ""), Sys.getenv("MAMBA_ROOT_PREFIX", ""),
+             path.expand(c("~/mamba", "~/micromamba")), "/root/mamba", "/opt/mamba",
+             file.path(dirname(dirname(dirname(R.home("bin")))), ""))
+  roots <- roots[nzchar(roots)]
+  file.path(sub("/+$", "", roots), "envs", "longread", "bin")
+}
+.LONG_ENV_BIN <- "/root/mamba/envs/longread/bin"
 
 .long_tool <- function(name) {
-  cand <- c(Sys.getenv(paste0("STRYM_", toupper(name)), ""), file.path(.LONG_ENV_BIN, name), unname(Sys.which(name)))
+  cand <- c(Sys.getenv(paste0("STRYM_", toupper(name)), ""), file.path(c(.LONG_ENV_BIN, .long_env_bins()), name), unname(Sys.which(name)))
   cand <- cand[nzchar(cand) & file.exists(cand)]
   if (length(cand)) cand[1] else ""
 }
@@ -629,3 +678,120 @@ check_long_tools <- function() {
   data.frame(tool = t, found = nzchar(p), path = unname(p), stringsAsFactors = FALSE)
 }
 
+# ---- Inputs for RTP-STAR from the Tux results -----------------------------------------------------------------------------
+# RTP-STAR (random-forest network) needs two files the researcher would otherwise build by hand:
+#   genes file       the differentially expressed genes (first column, with a header)
+#   expression file  gene names in column 1, then one column per SAMPLE (replicates in separate columns)
+# A Tux run holds both: gene_exp.diff has the group-to-group tests, genes.read_group_tracking the FPKM of every gene in every replicate.
+# They are written to <output folder>/rtpstar_inputs/ at the end of a Tux run, and can be built again with other cutoffs in the RTP-STAR tab.
+# Genes are named as in the annotation (gene_short_name, like the GENIST files); when fewer than half of the loci have a name the Tux ids are used instead.
+# Nothing in the Tux folders is changed.
+#
+# tux_rtpstar_inputs(): returns list(genes_file, expression_file, readme, n_genes, n_pass, n_significant, capped, n_expression_genes, samples, summary, warnings)
+# and stops with a plain message when the results cannot give a useful pair of files (no replicate-level table, fewer than 3 samples, fewer than 2 genes).
+tux_rtpstar_inputs <- function(diff_dir, output_folder, samples_used = file.path(dirname(diff_dir), "samples_used.csv"),
+                               q_cutoff = 0.05, min_log2fc = 1, min_fpkm = 1, max_genes = 500) {
+  f_rg <- file.path(diff_dir, "genes.read_group_tracking"); f_de <- file.path(diff_dir, "gene_exp.diff"); f_tr <- file.path(diff_dir, "genes.fpkm_tracking")
+  have <- function(f) file.exists(f) && !is.na(file.size(f)) && file.size(f) > 0
+  if (!have(f_de)) stop("gene_exp.diff (the Cuffdiff comparisons) was not found in ", diff_dir, ".", call. = FALSE)
+  if (!have(f_rg)) stop("genes.read_group_tracking (the expression of every replicate) was not found in ", diff_dir, ": the expression file for RTP-STAR needs it.", call. = FALSE)
+  if (!is.numeric(q_cutoff) || length(q_cutoff) != 1 || is.na(q_cutoff) || q_cutoff <= 0 || q_cutoff > 1) stop("The q-value cutoff must be between 0 and 1.", call. = FALSE)
+  if (length(min_log2fc) != 1 || is.na(min_log2fc) || min_log2fc < 0) stop("The minimum fold change must be 0 or more.", call. = FALSE)
+  rd <- function(f) utils::read.delim(f, check.names = FALSE, stringsAsFactors = FALSE, quote = "", comment.char = "")
+
+  # expression of every gene in every replicate (a failed locus counts as 0, as everywhere in StRym)
+  rg <- rd(f_rg)
+  if (!all(c("tracking_id", "condition", "replicate", "FPKM") %in% names(rg))) stop("genes.read_group_tracking does not have the expected columns.", call. = FALSE)
+  key <- paste(rg$condition, rg$replicate)
+  nm <- rep(NA_character_, nrow(rg))
+  if (have(samples_used)) {
+    used <- utils::read.csv(samples_used, stringsAsFactors = FALSE)
+    if (all(c("group", "k", "sample") %in% names(used))) nm <- as.character(used$sample)[match(key, paste(used$group, used$k - 1))]      # Cuffdiff numbers replicates 0, 1, ...
+  }
+  nm[is.na(nm)] <- paste0(rg$condition, "_rep", suppressWarnings(as.integer(rg$replicate)) + 1L)[is.na(nm)]
+  ord <- unique(data.frame(cond = rg$condition, rep = suppressWarnings(as.integer(rg$replicate)), sample = nm, stringsAsFactors = FALSE))
+  ord <- ord[order(factor(ord$cond, levels = unique(rg$condition)), ord$rep), , drop = FALSE]
+  samples <- make.unique(ord$sample, sep = "_"); names(samples) <- paste(ord$cond, ord$rep)
+  if (length(samples) < 3) stop(sprintf("RTP-STAR needs several samples; the Tux results have %d. With so few samples a network cannot be inferred.", length(samples)), call. = FALSE)
+  fp <- suppressWarnings(as.numeric(rg$FPKM)); fp[is.na(fp)] <- 0
+  ids <- unique(as.character(rg$tracking_id))
+  M <- matrix(0, length(ids), length(samples), dimnames = list(ids, unname(samples)))
+  M[cbind(match(as.character(rg$tracking_id), ids), match(key, names(samples)))] <- fp
+
+  # gene names
+  de <- rd(f_de)
+  need <- c("sample_1", "sample_2", "status", "log2(fold_change)", "q_value")
+  if (!all(need %in% names(de))) stop("gene_exp.diff does not have the expected columns.", call. = FALSE)
+  lab <- stats::setNames(rep(NA_character_, length(ids)), ids)
+  if (have(f_tr)) { tr <- rd(f_tr)
+    if (all(c("tracking_id", "gene_short_name") %in% names(tr))) lab[] <- trimws(as.character(tr$gene_short_name))[match(ids, tr$tracking_id)] }
+  if (all(is.na(lab)) && all(c("test_id", "gene") %in% names(de))) lab[] <- trimws(as.character(de$gene))[match(ids, de$test_id)]
+  lab[lab %in% c("-", "", "NA")] <- NA
+  use_ids <- mean(!is.na(lab)) < 0.5                                               # a genome without gene names: the Tux ids are the names
+  label <- if (use_ids) stats::setNames(ids, ids) else lab
+  keep <- !is.na(label); M <- M[keep, , drop = FALSE]; lbl <- unname(label[keep])
+  o <- order(-rowMeans(M)); M <- M[o, , drop = FALSE]; lbl <- lbl[o]                  # one row per gene name: its most expressed locus
+  first <- !duplicated(lbl); M <- M[first, , drop = FALSE]; lbl <- lbl[first]
+  o <- order(lbl, method = "radix"); M <- M[o, , drop = FALSE]; lbl <- lbl[o]; rownames(M) <- lbl
+  if (nrow(M) < 2) stop("Fewer than 2 genes with a name in the Tux results.", call. = FALSE)
+
+  # the differentially expressed genes: significant, and a large change, between any two of the groups
+  lf <- suppressWarnings(as.numeric(de[["log2(fold_change)"]])); q <- suppressWarnings(as.numeric(de$q_value))
+  dl <- if ("test_id" %in% names(de)) unname(label[match(as.character(de$test_id), ids)]) else rep(NA_character_, nrow(de))
+  if ("gene" %in% names(de)) { g2 <- trimws(as.character(de$gene)); g2[g2 %in% c("-", "", "NA")] <- NA; dl[is.na(dl) & !use_ids] <- g2[is.na(dl) & !use_ids] }
+  istrue <- function(x) !is.na(x) & x
+  hit <- de$status == "OK" & istrue(q <= q_cutoff) & istrue(abs(lf) >= min_log2fc) & !is.na(dl)
+  strength <- if (any(hit)) tapply(pmin(abs(lf[hit]), 20), dl[hit], max) else numeric()     # the strongest change of each gene (Inf capped)
+  n_sig <- length(strength)
+  strength <- strength[names(strength) %in% lbl]
+  if (length(strength)) strength <- strength[apply(M[names(strength), , drop = FALSE], 1, function(r) any(r >= min_fpkm))]
+  n_pass <- length(strength)
+  capped <- !is.na(max_genes) && max_genes > 0 && n_pass > max_genes
+  if (capped) strength <- strength[order(-strength, names(strength), method = "radix")][seq_len(max_genes)]
+  genes <- if (length(strength)) sort(names(strength), method = "radix") else character()
+  if (length(genes) < 2) stop(sprintf("Only %d gene(s) are differentially expressed with these cutoffs (q <= %s, |log2 fold change| >= %s, FPKM >= %s somewhere): too few for a network. Relax the cutoffs.",
+                                      length(genes), format(q_cutoff), format(min_log2fc), format(min_fpkm)), call. = FALSE)
+
+  # write: the expression file holds the chosen genes and every other gene that is expressed (RTP-STAR may use more genes than the genes file)
+  rows <- unique(c(genes, rownames(M)[apply(M, 1, max) >= min_fpkm])); rows <- sort(rows, method = "radix")
+  dir.create(output_folder, recursive = TRUE, showWarnings = FALSE)
+  genes_file <- file.path(output_folder, "rtpstar_genes_from_tux.csv"); expr_file <- file.path(output_folder, "rtpstar_expression_from_tux.csv")
+  readme <- file.path(output_folder, "README_rtpstar_inputs.txt")
+  utils::write.csv(data.frame(gene = genes), genes_file, row.names = FALSE)
+  utils::write.csv(data.frame(gene = rows, as.data.frame(round(M[rows, , drop = FALSE], 4), check.names = FALSE), check.names = FALSE), expr_file, row.names = FALSE)
+  per_group <- table(ord$cond); warn <- character()
+  if (any(per_group < 2)) warn <- c(warn, sprintf("%s has a single replicate: RTP-STAR works best with replicates in separate columns.", paste(names(per_group)[per_group < 2], collapse = ", ")))
+  if (length(samples) < 6) warn <- c(warn, sprintf("Only %d samples: the random forests have little to learn from; treat the network with care.", length(samples)))
+  summary <- sprintf("%s differentially expressed genes (q <= %s, |log2 fold change| >= %s between two groups, FPKM >= %s somewhere)%s; expression of %s genes in %d samples (%s).",
+                     format(length(genes), big.mark = ","), format(q_cutoff), format(min_log2fc), format(min_fpkm),
+                     if (capped) sprintf("; kept the %s strongest of %s", format(max_genes, big.mark = ","), format(n_pass, big.mark = ",")) else "",
+                     format(length(rows), big.mark = ","), length(samples), paste(unname(samples), collapse = ", "))
+  writeLines(c("Inputs for RTP-STAR, made from your Tux results", "",
+               "rtpstar_genes_from_tux.csv        -> RTP-STAR tab, 'Genes file'",
+               "rtpstar_expression_from_tux.csv   -> RTP-STAR tab, 'Gene expression file'", "",
+               summary, if (use_ids) "Genes are named by their Tux ids (the annotation has no gene names for most loci)." else "Genes are named as in the annotation (gene_short_name).",
+               if (length(warn)) c("", paste("Note:", warn)), "",
+               "Optional in RTP-STAR: a transcription factor list (without it every gene may regulate every other and the run takes longer), a gene-name file,",
+               "a clustering file and a time course file. For a time course file with the time points in order, use the GENIST tab's 'Start from your Tux results'.",
+               "Nothing in the Tux folders was changed. To use other cutoffs, build the files again in the RTP-STAR tab (Start from your Tux results)."), readme)
+  list(genes_file = genes_file, expression_file = expr_file, readme = readme, n_genes = length(genes), n_pass = n_pass, n_significant = n_sig, capped = capped,
+       n_expression_genes = length(rows), samples = unname(samples), summary = summary, warnings = warn)
+}
+
+# At the end of a Tux run: write the RTP-STAR inputs next to the results (<output folder>/rtpstar_inputs/). When the results cannot give them
+# (too few samples, too few differentially expressed genes ...) a note says why instead. Never raises an error: the Tux run itself is done.
+tux_write_rtpstar_inputs <- function(output_folder, ...) {
+  dir_out <- file.path(output_folder, "rtpstar_inputs"); unlink(dir_out, recursive = TRUE)           # never leave the files of an earlier run beside new results
+  r <- tryCatch(tux_rtpstar_inputs(file.path(output_folder, "diff_out"), dir_out, ...), error = function(e) e)
+  if (inherits(r, "error")) {
+    dir.create(dir_out, recursive = TRUE, showWarnings = FALSE)
+    try(writeLines(c("No inputs for RTP-STAR were made from these Tux results.", "", conditionMessage(r), "",
+                     "You can still prepare them yourself, or build them with other cutoffs in the RTP-STAR tab (Start from your Tux results)."),
+                   file.path(dir_out, "rtpstar_inputs_NOT_made.txt")), silent = TRUE)
+    message("Note: no RTP-STAR inputs were made: ", conditionMessage(r))
+    return(invisible(NULL))
+  }
+  message("RTP-STAR inputs: ", r$summary, " Saved in ", dir_out)
+  for (w in r$warnings) message("Note: ", w)
+  invisible(r)
+}

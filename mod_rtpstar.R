@@ -1,4 +1,17 @@
-# mod_rtpstar.R -- the RTP-STAR module of StRym (GENIE3-based regulatory networks with direction).
+# mod_rtpstar.R -- the RTP-STAR tab of StRym (GENIE3-based regulatory networks with direction).
+#
+# rtpstar_ui(id)      four tabs: 1 Inputs (start from Tux results, required files, optional files, output), 2 Parameters, 3 Run, 4 Results.
+# rtpstar_server(...) like the GENIST tab, plus "Start from your Tux results": it finds the genes file and the expression file a Tux run wrote (rtpstar_inputs/) or
+#                     builds them with your cutoffs (rtpstar_inputs_from_tux() in rtpstar.R); the TUX results page can hand them over (from_tux).
+# The algorithm is in rtpstar.R; this file is only the screen.
+
+# Where the RTP-STAR results of inputs made from a Tux run go by default: the StRym project' 06_regulatory_networks/RTP-STAR when the files belong to a project,
+# else a RTP-STAR_results folder beside the rtpstar_inputs folder (never inside it).
+rtp_default_out <- function(genes_file) {
+  d <- dirname(normalizePath(genes_file, winslash = "/", mustWork = FALSE)); up <- d
+  for (i in 1:5) { up <- dirname(up); if (file.exists(file.path(up, "00_design", "design.json"))) return(file.path(up, "06_regulatory_networks", "RTP-STAR")) }
+  file.path(dirname(d), "RTP-STAR_results")
+}
 
 rtpstar_ui <- function(id) {
   ns <- NS(id)
@@ -6,20 +19,26 @@ rtpstar_ui <- function(id) {
     tabPanel("1 · Inputs", br(),
       fluidRow(
         column(6,
+          div(class = "card", h4("Start from your Tux results"),
+            pathUI(ns("tux"), "Tux results", type = "dir",
+                   help = paste0("Your StRym project folder (the one that holds 01_quantification), or the Tux “diff_out” folder. StRym then fills in the genes file and the gene expression file below ",
+                                 "from it (the differentially expressed genes, and the expression of every replicate). Nothing in that folder is changed.")),
+            uiOutput(ns("tux_opts")), uiOutput(ns("tux_result"))),
           div(class = "card", h4("Required"),
             pathUI(ns("genes"), "Genes file",
-                   help = "Excel/CSV file with the (differentially expressed) genes to use, in the first column (first row = header)."),
+                   help = "Excel/CSV file with the (differentially expressed) genes to use, in the first column (first row = header). Made for you when you start from Tux results above."),
             pathUI(ns("expr"), "Gene expression file",
-                   help = "Expression used for the inference: gene names in column 1, then one column per sample (replicates in separate columns work best). May hold more genes than the genes file. A column named TF (1/0) marks the regulators; otherwise provide a TF file.")),
+                   help = "Expression used for the inference: gene names in column 1, then one column per sample (replicates in separate columns work best). May hold more genes than the genes file. A column named TF (1/0) marks the regulators; otherwise provide a TF file. Made for you when you start from Tux results above.")),
           div(class = "card", h4("Optional"),
             pathUI(ns("tf"), "Transcription factors file",
-                   help = "Gene names in the first column; only these genes can regulate others. Without it (and without a TF column) every gene is a potential regulator."),
+                   help = "Gene names in the first column; only these genes can regulate others. Optional: without it (and without a TF column) every gene is a potential regulator and the run takes longer."),
             pathUI(ns("sym"), "Gene name file", help = "Gene id in column 1, readable name in column 2."),
             pathUI(ns("clu"), "Clustering data file",
                    help = "Expression across spatial regions / conditions (gene names in column 1). Genes are clustered first and a network is inferred per cluster."),
             pathUI(ns("tc"), "Time course file",
                    help = "Expression over time (gene names in column 1, at least 3 time points). Used to label each edge as activating or inhibiting."),
             actionLink(ns("use_tf"), "Use the Arabidopsis TF list"), HTML("&nbsp;·&nbsp;"),
+            actionLink(ns("no_tf"), "No TF list (optional; slower)"), HTML("&nbsp;·&nbsp;"),
             actionLink(ns("use_sym"), "Use the Arabidopsis gene names"))),
         column(6,
           div(class = "card", h4("Output"),
@@ -68,7 +87,8 @@ rtpstar_ui <- function(id) {
       div(class = "card", h4("Clusters"), DTOutput(ns("clusters"))))))
 }
 
-rtpstar_server <- function(id, roots, app_dir) {
+# from_tux: optional reactiveVal set by the TUX tab ("Use them in the RTP-STAR tab") to list(genes = <genes file>, expr = <expression file>).
+rtpstar_server <- function(id, roots, app_dir, from_tux = NULL) {
   moduleServer(id, function(input, output, session) {
     ns <- session$ns
     genes <- pathServer("genes", roots); expr <- pathServer("expr", roots); tf <- pathServer("tf", roots)
@@ -78,7 +98,11 @@ rtpstar_server <- function(id, roots, app_dir) {
     preset_path <- reactive(preset$path())
 
     ref <- function(f) file.path(app_dir, "reference", f)
+    if (!is.null(from_tux)) observeEvent(from_tux(), { v <- from_tux(); req(is.list(v), file.exists(v$genes), file.exists(v$expr))
+      if (!nzchar(out$path())) out$set(rtp_default_out(v$genes))
+      genes$set(v$genes); expr$set(v$expr); showNotification("The genes file and the expression file made from the Tux results are filled in. Check the Parameters, then press Run.", duration = 8) }, ignoreNULL = TRUE)
     observeEvent(input$use_tf,  tf$set(ref("Arabidopsis_TFs.xlsx")))
+    observeEvent(input$no_tf,   tf$set(""))
     observeEvent(input$use_sym, sym$set(ref("GeneNames.xlsx")))
     ex_t0 <- reactiveVal(NULL)                                                   # after the example is loaded, tick "Replace the existing results" once that box has been redrawn
     observe({ t0 <- ex_t0(); req(!is.null(t0)); el <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
@@ -97,6 +121,63 @@ rtpstar_server <- function(id, roots, app_dir) {
     observeEvent(genes$path(), {
       p <- genes$path()
       if (nzchar(p) && file.exists(p) && !nzchar(isolate(out$path()))) out$set(file.path(dirname(p), "RTP-STAR_results"))
+    })
+    last_auto <- reactiveVal("")                                                       # informative result name from the genes file (see mod_genist.R)
+    observeEvent(genes$path(), {
+      p <- genes$path(); if (!nzchar(p)) return()
+      new <- strym_network_filename(tools::file_path_sans_ext(basename(p)), "RTPSTAR")
+      cur <- isolate(input$outfile); o <- isolate(out$path())
+      if (!is.null(cur) && cur %in% c("biograph.txt", isolate(last_auto())) && !(nzchar(o) && file.exists(file.path(o, cur))))
+        updateTextInput(session, "outfile", value = new)
+      last_auto(new)
+    })
+
+    # ---- start from Tux results: build the genes file and the expression file ----
+    tux <- pathServer("tux", roots, "dir")
+    tux_msg <- reactiveVal(NULL)
+    tux_found <- reactive({
+      p <- tux$path(); if (!nzchar(p) || !dir.exists(p)) return(NULL)
+      tryCatch(tux_find_results(p), error = function(e) e)
+    })
+    prepared <- reactive({                                              # the files the Tux run itself wrote (rtpstar_inputs/), when they are there
+      x <- tux_found(); if (is.null(x) || inherits(x, "error")) return(NULL)
+      d <- file.path(dirname(x$diff_dir), "rtpstar_inputs"); g <- file.path(d, "rtpstar_genes_from_tux.csv"); e <- file.path(d, "rtpstar_expression_from_tux.csv")
+      if (file.exists(g) && file.exists(e)) list(genes = g, expr = e, dir = d) else NULL
+    })
+    observeEvent(tux$path(), tux_msg(NULL), ignoreInit = TRUE)
+    output$tux_opts <- renderUI({
+      x <- tux_found(); if (is.null(x)) return(NULL)
+      if (inherits(x, "error")) return(div(class = "bad", "✘ ", conditionMessage(x)))
+      pr <- prepared()
+      tagList(
+        div(class = "hint", sprintf("Found the Tux results in %s.", to_windows_path(x$diff_dir))),
+        if (!is.null(pr)) div(class = "ok", style = "font-weight:400", "✔ The Tux run already made these files for RTP-STAR (", span(class = "path", to_windows_path(pr$dir)), "). ",
+                              actionButton(ns("tux_use"), "Use them", class = "btn-primary btn-sm")),
+        div(class = "hint", if (!is.null(pr)) "Or build them again with other cutoffs:" else "Build the genes file and the expression file:"),
+        fluidRow(
+          column(6, numericInput(ns("tux_q"), "Significance cutoff (q-value)", 0.05, min = 0.0001, max = 1, step = 0.01)),
+          column(6, numericInput(ns("tux_lfc"), "Smallest change (log2 fold change)", 1, min = 0, step = 0.25))),
+        fluidRow(
+          column(6, numericInput(ns("tux_fpkm"), "Smallest expression (FPKM) in some sample", 1, min = 0, step = 0.5)),
+          column(6, numericInput(ns("tux_max"), "Most genes to keep (0 = no limit)", 500, min = 0, step = 100))),
+        div(class = "hint", "A gene is chosen when Tux finds it significantly different between two of the groups by at least this much. If more genes pass than the limit, the ones that change most are kept."),
+        actionButton(ns("tux_build"), "Build the genes file and the expression file", class = "btn-primary"))
+    })
+    output$tux_result <- renderUI({ m <- tux_msg(); if (!is.null(m) && !m$ok) div(class = "bad", style = "font-weight:400", "✘ ", m$text) })
+    observeEvent(input$tux_use, { pr <- prepared(); req(pr); if (!nzchar(out$path())) out$set(rtp_default_out(pr$genes)); genes$set(pr$genes); expr$set(pr$expr); tux_msg(NULL)
+      showNotification("Filled in from the Tux run. Check the Parameters, then press Run.", duration = 6) })
+    observeEvent(input$tux_build, {
+      x <- tux_found(); req(is.list(x), !inherits(x, "error"))
+      num <- function(v, d) if (is.null(v) || is.na(v)) d else v
+      odir <- out$path()
+      if (!nzchar(odir)) odir <- if (!is.null(x$project_dir)) file.path(x$project_dir, "06_regulatory_networks", "RTP-STAR") else file.path(dirname(x$diff_dir), "RTP-STAR")
+      r <- tryCatch(rtpstar_inputs_from_tux(tux$path(), file.path(odir, "inputs"), q_cutoff = num(input$tux_q, 0.05), min_log2fc = num(input$tux_lfc, 1),
+                                            min_fpkm = num(input$tux_fpkm, 1), max_genes = num(input$tux_max, 500)), error = function(e) e)
+      if (inherits(r, "error")) { tux_msg(list(ok = FALSE, text = conditionMessage(r))); return(invisible()) }
+      if (!nzchar(out$path())) out$set(odir)
+      genes$set(r$genes_file); expr$set(r$expression_file)
+      tux_msg(list(ok = TRUE, text = r$summary))
+      showNotification(paste0(r$summary, " Saved in ", to_windows_path(dirname(r$genes_file)), ". Check the Parameters, then press Run."), duration = 12)
     })
 
     results_tick <- reactiveVal(0)          # bumped whenever a run finishes (refreshes checks and results)
@@ -121,7 +202,7 @@ rtpstar_server <- function(id, roots, app_dir) {
           if ("TF" %in% names(e)) info <- c(info, "The expression file has a TF column: it defines the regulators.")
           else if (nzchar(tf$path())) { t <- read_table_cached(tf$path())
             if (!inherits(t, "error")) info <- c(info, sprintf("%d of the found genes are transcription factors.", sum(hit %in% t[[1]]))) }
-          else warns <- c(warns, "No TF file or TF column: every gene will be treated as a potential regulator.")
+          else warns <- c(warns, "No TF file or TF column (optional): every gene will be treated as a potential regulator, so the random forests are larger and the run takes longer. You can still run it.")
           if (nzchar(tc$path())) { t <- read_table_cached(tc$path())
             if (inherits(t, "error")) errs <- c(errs, conditionMessage(t))
             else { tm <- table_to_matrix(t)                                      # only numeric columns are time points

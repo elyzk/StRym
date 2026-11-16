@@ -99,9 +99,11 @@ strym_count_columns <- function(tab, listed = character()) {
   m <- sapply(tab[-1], .to_num, simplify = TRUE)
   if (!is.matrix(m)) m <- matrix(m, nrow = nrow(tab), dimnames = list(NULL, names(tab)[-1]))
   rownames(m) <- genes; m <- m[keep, , drop = FALSE]
-  if (any(is.infinite(m))) { w <- which(is.infinite(m), arr.ind = TRUE)[1, ]
-    stop(sprintf("The table contains Inf / -Inf values (first: gene %s, sample %s). Replace them or remove those rows.", rownames(m)[w[1]], colnames(m)[w[2]]), call. = FALSE) }
-  na <- is.na(m)
+  dropped$rows_blank <- sum(blank); dropped$rows_dup <- sum(dup)
+  if (any(is.infinite(m))) { w <- which(is.infinite(m), arr.ind = TRUE)                              # Inf has no meaning in a table of counts or FPKM: like an empty cell it is read as 0, and said so
+    message(sprintf("Note: %d cell(s) hold Inf / -Inf and were read as 0 (first: gene %s, sample %s).", nrow(w), rownames(m)[w[1, 1]], colnames(m)[w[1, 2]]))
+    dropped$inf_cells <- nrow(w); m[is.infinite(m)] <- 0 }
+  na <- is.na(m); dropped$na_cells <- sum(na)
   if (any(na)) { message(sprintf("Note: %s empty or non-numeric cell(s) (in %d sample%s) were read as 0.", format(sum(na), big.mark = ","), sum(colSums(na) > 0), if (sum(colSums(na) > 0) == 1) "" else "s")); m[na] <- 0 }
   empty <- colSums(m) == 0                                              # a library with nothing in it carries no information (and breaks the models)
   if (any(empty)) { message("Note: sample(s) with no counts at all were left out: ", paste(colnames(m)[empty], collapse = ", "), "."); dropped$empty <- colnames(m)[empty]; m <- m[, !empty, drop = FALSE]
@@ -159,6 +161,13 @@ strym_load_counts <- function(data_path, sample_sheet = "", unit = "auto", diff_
     stop(sprintf("The table has negative values (first: gene %s, sample %s). StRym needs counts or non-negative expression values (FPKM / TPM / CPM), not log2 or z-scored values.",
                  rownames(m)[w[1]], colnames(m)[w[2]]), call. = FALSE) }
   whole <- isTRUE(all(m == floor(m)))
+  # A table of counts with a few stray decimals (a "1,5" typed by hand, a rounding artefact) is still a table of counts: they are rounded and said so.
+  # A table where decimals are the rule (FPKM / TPM / CPM) stays "already normalized".
+  if (!whole && identical(unit, "auto") && mean(m != floor(m)) < 0.001) {
+    w <- which(m != floor(m), arr.ind = TRUE)
+    log(sprintf("Note: %d cell(s) hold decimals in a table of whole numbers (first: gene %s, sample %s). The table is taken as raw counts and they are rounded.", nrow(w), rownames(m)[w[1, 1]], colnames(m)[w[1, 2]]))
+    m <- round(m); whole <- TRUE; raw$dropped$decimal_cells <- nrow(w)
+  }
   as_counts <- identical(unit, "counts") || (identical(unit, "auto") && whole)
   if (identical(unit, "auto") && !whole) {                         # decimals: taken as already normalized, but expected counts (RSEM) look the same
     cs <- colSums(m); log(sprintf("The values have decimals, so they are used as they are (already normalized). If this is a table of expected counts (RSEM, Salmon, kallisto) choose “Raw counts” in the design%s.",
@@ -169,7 +178,7 @@ strym_load_counts <- function(data_path, sample_sheet = "", unit = "auto", diff_
     val <- m; for (j in seq_len(ncol(m))) val[, j] <- m[, j] * (1e6 / lib[j]); ulab <- "CPM"       # counts per million, one column at a time (no second full copy)
   } else { val <- m; ulab <- "FPKM/TPM" }
   # the expression values are kept as ONE genes x samples matrix (a long gene x sample table costs ~20x more memory)
-  out <- list(kind = "counts", unit = ulab, samples = raw$samples, counts = if (as_counts) m else NULL,    # counts: the raw table, kept for DESeq2-derived q-values
+  out <- list(kind = "counts", unit = ulab, whole_numbers = whole, samples = raw$samples, counts = if (as_counts) m else NULL,    # counts: the raw table, kept for DESeq2-derived q-values
               wide = val, rep = NULL, diff = NULL, gene_names = raw$gene_names, dropped = raw$dropped)
   diff_path <- as.character(unlist(diff_path)); diff_path <- diff_path[!is.na(diff_path) & nzchar(trimws(diff_path))]
   if (length(diff_path)) {
@@ -654,7 +663,7 @@ strym_run_mse <- function(tc, params) {
 }
 
 # Write the per-pair tables, the main-set table, the pairs used, and one overview picture. Returns the file names written.
-strym_write_calls <- function(out_dir, prefix, run, tc, label) {
+strym_write_calls <- function(out_dir, prefix, run, tc, label, params = NULL) {
   files <- character()
   write_one <- function(df, f) { utils::write.csv(df, file.path(out_dir, f), row.names = FALSE); files <<- c(files, f) }
   for (nm in names(run$results)) write_one(run$results[[nm]], sprintf("%s_%s.csv", prefix, gsub("[^A-Za-z0-9._-]+", "_", nm)))
@@ -675,10 +684,99 @@ strym_write_calls <- function(out_dir, prefix, run, tc, label) {
       p <- ggplot2::ggplot(long, ggplot2::aes(time_point, fill = call)) + ggplot2::geom_bar(position = "dodge") +
         ggplot2::facet_wrap(~comparison) +
         ggplot2::scale_fill_manual(values = c(up = "#6F7D1C", down = "#4156A1"), drop = FALSE) +
-        ggplot2::labs(x = "Time point", y = "Genes called", fill = NULL, title = paste0(label, ": genes called at each time point")) + ggplot2::theme_bw()
+        ggplot2::labs(x = "Time point", y = "Genes called", fill = NULL, title = paste0(label, ": genes called at each time point")) + ggplot2::theme_bw() +
+        ggplot2::theme(plot.title = ggplot2::element_text(size = 10))                                    # a long title is no longer cut off in a narrow figure
       f <- sprintf("%s_calls_per_timepoint.png", prefix)
       ggplot2::ggsave(file.path(out_dir, f), p, width = 3 + 2.2 * min(4, nrow(tc$pairs)), height = 4, dpi = 150); files <- c(files, f)
     }
+  }
+  if (is.list(params) && isTRUE(params$entropy_heatmaps))                              # heatmaps are extras: a problem drawing them must never fail the step
+    files <- c(files, tryCatch(strym_entropy_heatmaps(out_dir, prefix, run, tc, params, label),
+                               error = function(e) { message("Note: the heatmaps could not be drawn (", conditionMessage(e), ")."); character() }))
+  files
+}
+
+# ---- heatmaps of the genes an entropy step calls (pheatmap) ------------------------------------------------------------------
+# Quick-look figures, not publication figures. Per comparison, two heatmaps of the called genes (the main set first, then the rest, at most
+# params$heatmap_max_genes of them):
+#   <prefix>_heatmap_log2FC_<comparison>.png       log2 fold change treated vs control at every time point (time points in order, not clustered)
+#   <prefix>_heatmap_expression_<comparison>.png   expression of the treated and of the control profile, each gene scaled to its own mean (z-score)
+# With several comparisons one more, <prefix>_heatmap_log2FC_all_comparisons.png, puts them side by side.
+# The size follows the data: the figure grows with the number of genes and columns, gene names are printed only while they stay readable,
+# and every awkward case (one gene, two time points, identical values, no variation, missing values) is drawn instead of failing.
+.hm_clip <- function(x, lo, hi) max(lo, min(hi, x))
+.hm_draw <- function(mat, file, title, col_info = NULL, row_info = NULL, gaps_col = NULL, diverging = TRUE, cluster_rows = TRUE, lim = NULL) {
+  mat <- as.matrix(mat); mat[!is.finite(mat)] <- 0
+  nr <- nrow(mat); nc <- ncol(mat); if (!nr || !nc) return(FALSE)
+  if (is.null(lim)) lim <- max(1, as.numeric(stats::quantile(abs(mat), 0.98, na.rm = TRUE)))
+  if (!is.finite(lim) || lim <= 0) lim <- 1
+  mat <- pmax(pmin(mat, lim), -lim)                                                       # one outlier must not wash out the colours
+  pal <- grDevices::colorRampPalette(rev(RColorBrewer::brewer.pal(11, "RdBu")))(101)
+  brk <- seq(-lim, lim, length.out = 102)                                                 # fixed, so a flat matrix still has valid breaks
+  show_rn <- nr <= 80
+  w <- .hm_clip(2.6 + 0.42 * nc + (if (show_rn) 2.2 else 0.4) + (if (!is.null(row_info)) 0.9 else 0), 5, 24)
+  h <- .hm_clip(2.4 + 0.2 * nr + (if (!is.null(col_info)) 0.8 else 0.3), 4, 28)
+  fr <- .hm_clip(11 - nr / 8, 4, 10); fc <- .hm_clip(11 - nc / 4, 5, 10)
+  do_cluster <- cluster_rows && nr >= 2 && nr <= 3000 && any(apply(mat, 1, stats::sd) > 0)
+  args <- list(mat, color = pal, breaks = brk, cluster_rows = do_cluster, cluster_cols = FALSE, show_rownames = show_rn,
+               fontsize_row = fr, fontsize_col = fc, fontsize = 9, main = title, border_color = if (nr * nc <= 600) "grey85" else NA,
+               annotation_col = col_info, annotation_row = row_info, gaps_col = gaps_col, filename = file, width = w, height = h)
+  ac <- list()                                                                            # fixed colours for the side bars, so up / down / treated / control read the same everywhere
+  if (!is.null(row_info) && "direction" %in% names(row_info)) ac$direction <- c(up = "#B2182B", down = "#2166AC", mixed = "#999999")
+  if (!is.null(col_info) && "group" %in% names(col_info)) ac$group <- c(treated = "#B2182B", control = "#2166AC")
+  if (length(ac)) args$annotation_colors <- ac
+  args <- args[!vapply(args, is.null, TRUE)]
+  if ("angle_col" %in% names(formals(pheatmap::pheatmap))) args$angle_col <- if (nc > 12) "90" else "45"
+  ok <- tryCatch({ suppressMessages(do.call(pheatmap::pheatmap, args)); TRUE }, error = function(e) e)
+  if (inherits(ok, "error") && do_cluster) {                                              # clustering can fail on odd data: draw without it
+    args$cluster_rows <- FALSE
+    ok <- tryCatch({ suppressMessages(do.call(pheatmap::pheatmap, args)); TRUE }, error = function(e) e)
+  }
+  if (inherits(ok, "error")) { message("Note: heatmap ", basename(file), " not drawn (", conditionMessage(ok), ")."); return(FALSE) }
+  isTRUE(ok) && file.exists(file)
+}
+
+strym_entropy_heatmaps <- function(out_dir, prefix, run, tc, params, label) {
+  if (!requireNamespace("pheatmap", quietly = TRUE) || !requireNamespace("RColorBrewer", quietly = TRUE)) return(character())
+  if (!length(run$results)) return(character())
+  maxg <- max(2L, as.integer(if (is.null(params$heatmap_max_genes)) 100 else params$heatmap_max_genes))
+  keys <- .pair_keys(tc$pairs); files <- character(); tps <- tc$tps
+  fname <- function(kind, key) sprintf("%s_heatmap_%s_%s.png", prefix, kind, gsub("[^A-Za-z0-9._-]+", "_", key))
+  labs <- function(ids) { nm <- if (is.null(tc$gene_names)) NULL else unname(tc$gene_names[ids])
+    l <- if (is.null(nm)) ids else ifelse(is.na(nm) | !nzchar(nm) | nm %in% c("-", "NA"), ids, sub("[,;].*$", "", nm)); make.unique(l, sep = "_") }
+  top_genes <- function(r) { r <- r[order(!r$main_set, -r$n_sig_timepoints, -apply(abs(as.matrix(r[, grep("^log2FC_", names(r)), drop = FALSE])), 1, max), method = "radix"), , drop = FALSE]
+    utils::head(r$gene, maxg) }
+  rowinfo <- function(r, g) { x <- r[match(g, r$gene), , drop = FALSE]; df <- data.frame(direction = factor(x$direction, levels = c("up", "down", "mixed")),
+                                                                                      time_points = x$n_sig_timepoints, row.names = labs(g)); df }
+  dir_col <- list(direction = c(up = "#B2182B", down = "#2166AC", mixed = "#999999"))
+  one_wide <- list()
+  for (i in seq_len(nrow(tc$pairs))) {
+    key <- keys[i]; r <- run$results[[key]]; if (is.null(r) || !nrow(r)) next
+    g <- top_genes(r); if (!length(g)) next
+    L <- tc$lfc[[i]][g, , drop = FALSE]; rownames(L) <- labs(g)
+    ttl <- sprintf("%s: %s vs %s (%d gene%s%s)", label, tc$pairs$treated[i], tc$pairs$control[i], length(g), if (length(g) == 1) "" else "s",
+                   if (nrow(r) > length(g)) sprintf(" of %d called", nrow(r)) else "")
+    ri <- rowinfo(r, g); ann_col <- NULL
+    if (.hm_draw(L, file.path(out_dir, fname("log2FC", key)), paste0(ttl, "\nlog2 fold change, treated vs control"), row_info = ri, lim = NULL,
+                 cluster_rows = TRUE)) files <- c(files, fname("log2FC", key))
+    # expression of treated and control, row-scaled (each gene: mean 0, sd 1 over the columns shown)
+    H <- log2(tc$heat[[i]][g, , drop = FALSE] + 1); C <- log2(tc$ctrl[[i]][g, , drop = FALSE] + 1)
+    E <- cbind(H, C); colnames(E) <- c(paste0(tc$pairs$treated[i], "_", tps), paste0(tc$pairs$control[i], "_", tps))
+    mu <- rowMeans(E); sdv <- apply(E, 1, stats::sd); Z <- (E - mu) / ifelse(sdv > 0, sdv, 1); rownames(Z) <- labs(g)
+    ann_col <- data.frame(group = factor(rep(c("treated", "control"), each = length(tps)), levels = c("treated", "control")), row.names = colnames(Z))
+    if (.hm_draw(Z, file.path(out_dir, fname("expression", key)), paste0(ttl, "\nlog2 expression, scaled per gene (z-score)"), col_info = ann_col, row_info = ri,
+                 gaps_col = length(tps), lim = 2.5, cluster_rows = TRUE)) files <- c(files, fname("expression", key))
+    one_wide[[key]] <- list(genes = g, score = r$n_sig_timepoints[match(g, r$gene)], lfc = tc$lfc[[i]])
+  }
+  if (length(one_wide) > 1) {                                                              # all comparisons side by side
+    sc <- tapply(unlist(lapply(one_wide, `[[`, "score")), unlist(lapply(one_wide, `[[`, "genes")), sum)
+    g <- names(sort(sc, decreasing = TRUE, method = "radix"))[seq_len(min(maxg, length(sc)))]
+    cols <- list(); gap <- integer(); n <- 0L
+    for (key in names(one_wide)) { m <- one_wide[[key]]$lfc[g, , drop = FALSE]; colnames(m) <- paste0(key, "_", tps); cols[[key]] <- m; n <- n + ncol(m); gap <- c(gap, n) }
+    A <- do.call(cbind, cols); rownames(A) <- labs(g)
+    ann <- data.frame(comparison = factor(rep(names(cols), each = length(tps)), levels = names(cols)), row.names = colnames(A))
+    if (.hm_draw(A, file.path(out_dir, fname("log2FC", "all_comparisons")), sprintf("%s: all comparisons (%d genes), log2 fold change", label, length(g)),
+                 col_info = ann, gaps_col = utils::head(gap, -1))) files <- c(files, fname("log2FC", "all_comparisons"))
   }
   files
 }

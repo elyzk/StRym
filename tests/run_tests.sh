@@ -12,11 +12,11 @@ cd "$(dirname "$0")/.." || exit 1
 log=$(mktemp)
 SUMMARY="cat('\nPASSED:', sum(r\$passed), ' FAILED:', sum(r\$failed), ' ERRORS:', sum(r\$error), ' SKIPPED:', sum(r\$skipped), '\n')"
 if [ "$1" = "quick" ]; then
-  Rscript -e "library(testthat); setwd('tests/testthat'); r <- as.data.frame(test_dir('.', filter = 'baselines|batch3|deseq2|drives|edgecases|genist|pipeline|review-fixes|rtpstar|singlecell-light|spaces-runner|steps', reporter = 'summary', stop_on_failure = FALSE)); $SUMMARY" > "$log" 2>&1
+  Rscript -e "library(testthat); setwd('tests/testthat'); r <- as.data.frame(test_dir('.', filter = 'baselines|batch3|deseq2|drives|edgecases|genist|pipeline|review-fixes|rtpstar|rtpstar-tux|singlecell-light|spaces-runner|steps|v9|v10|v11', reporter = 'summary', stop_on_failure = FALSE)); $SUMMARY" > "$log" 2>&1
 elif [ -n "$1" ]; then
   Rscript -e "library(testthat); setwd('tests/testthat'); r <- as.data.frame(test_file('test-$1.R', reporter = 'summary', stop_on_failure = FALSE)); $SUMMARY" > "$log" 2>&1
 else
   Rscript tests/run_tests.R > "$log" 2>&1
 fi
-awk '/^══ Failed/{show=1} show{print} /^(baselines|batch3|deseq2|drives|edgecases|genist|genist-tux|pipeline|quantify|resume|review-fixes|rtpstar|seurat|seurat-multi|singlecell-light|spaces-runner|steps):/{print substr($0, 1, 90)} /^PASSED:/{print}' "$log" | grep -v "built under R version"
+awk '/^══ Failed/{show=1} show{print} /^(baselines|batch3|deseq2|drives|edgecases|genist|genist-tux|pipeline|quantify|resume|review-fixes|rtpstar|rtpstar-tux|seurat|seurat-multi|singlecell-light|spaces-runner|steps|v9|v10|v11):/{print substr($0, 1, 90)} /^PASSED:/{print}' "$log" | grep -v "built under R version"
 rm -f "$log"

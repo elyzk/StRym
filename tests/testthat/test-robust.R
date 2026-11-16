@@ -13,11 +13,11 @@ test_that("table columns that are not in the sample sheet are left out and said 
   low <- wtab(c("sample,condition", "a_1,A", "a_2,A", "b_1,B", "b_2,B"), "s.csv"); expect_equal(.counts_raw(tab, low)$samples$condition, c("A", "A", "B", "B"))   # case differs
 })
 
-test_that("junk cells are counted, thousands separators and decimal commas understood, Inf and negatives refused", {
+test_that("junk cells are counted, thousands separators and decimal commas understood, Inf read as 0, negatives refused", {
   tab <- wtab(c("gene\tA\tB\tC", "g1\t10\t-\t\"1,234\"", "g2\tNA\t5\t7", "g3\tabc\t3\t4", "g4\t1,5\t2\t2"))
   m <- msgs_of(r <- .counts_raw(tab)); expect_equal(unname(r$m["g1", "C"]), 1234); expect_equal(unname(r$m["g4", "A"]), 1.5)
   expect_match(m, "3 empty or non-numeric cell"); expect_equal(unname(r$m["g3", "A"]), 0)
-  expect_error(.counts_raw(wtab(c("gene\tA\tB", "g1\tInf\t1", "g2\t2\t3"))), "Inf")
+  expect_message(ri <- .counts_raw(wtab(c("gene\tA\tB", "g1\tInf\t1", "g2\t2\t3"))), "Inf / -Inf and were read as 0"); expect_equal(unname(ri$m["g1", "A"]), 0); expect_equal(ri$dropped$inf_cells, 1)     # Inf is read as 0 like an empty cell, and reported (version 10)
   neg <- wtab(c("gene\tA\tB", "g1\t-3\t1", "g2\t2\t3")); expect_error(quiet(strym_load_counts(neg)), "negative values")
 })
 

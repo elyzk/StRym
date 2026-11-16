@@ -18,7 +18,7 @@ strym_step_modified_shannon_entropy <- function(ctx) {
   tc <- strym_timecourse(data, p, ctx$design$timepoint_names, log = ctx$log)
   if (length(tc$tps) < 3) stop(sprintf("Modified Shannon entropy needs at least 3 time points to tell outliers from the rest; this experiment has %d.", length(tc$tps)), call. = FALSE)
   run <- strym_run_mse(tc, p)
-  files <- strym_write_calls(ctx$out_dir, "MSE", run, tc, "Modified Shannon entropy")
+  files <- strym_write_calls(ctx$out_dir, "MSE", run, tc, "Modified Shannon entropy", params = p)
   for (i in seq_len(nrow(tc$pairs))) {
     r <- run$results[[.pair_keys(tc$pairs)[i]]]
     ctx$log(sprintf("%s vs %s: %d control-variable genes excluded; %d genes called; main set (>= %d time points): %d",

@@ -3,16 +3,34 @@
 # StRym — Streamlined transcriptomic Regulatory mapping
 
 One browser app that goes from RNA-seq reads to regulatory networks. StRym is an R re-implementation of the
-TuxNet modules (https://github.com/rspurney/TuxNet), running on Windows through WSL or directly on macOS:
+TuxNet modules (https://github.com/rspurney/TuxNet), running on Windows through WSL, native Linux, macOS, or Docker:
 
 | Module | What it does | Original |
 |---|---|---|
-| **TUX** | RNA-seq reads → differentially expressed genes (fastq-mcf, HISAT2, SAMtools, Cufflinks, Cuffmerge, Cuffdiff) | TUX tab |
+| **TUX** | RNA-seq reads → differentially expressed genes (fastq-mcf or fastp, HISAT2, SAMtools, Cufflinks, Cuffmerge, Cuffdiff) | TUX tab |
 | **GENIST** | gene regulatory networks from time-course data (Bayesian scoring, optional spatial clustering) | GENIST tab |
 | **RTP-STAR** | directed regulatory networks with random forests (GENIE3), clustering and time-course direction | RTP-STAR tab |
 
 Not (yet) ported: TuxNet's **TuxOP** step, which turns Cuffdiff output into the DEG gene lists and expression tables
 that GENIST and RTP-STAR take as input. For now, supply those files yourself (Excel/CSV).
+
+## What is new in version 11
+* Browse uses StRym's own fast file and folder window on Windows, macOS, Linux, and Docker. It provides common places, mounted drives, recent folders, path entry, filtering, hidden-file control, and multi-file selection without repeatedly scanning every drive.
+* The Drives page refreshes Windows drives in the background instead of freezing the Shiny session.
+* Releasing a WSL drive now refuses while a StRym run or another program still holds it, names the holder when possible, and reports success only after the drive is actually released.
+* TUX distinguishes warnings from errors. A researcher may explicitly continue past advice such as split sequencing lanes; missing or damaged inputs still block the run.
+* TUX can use `fastp` as an optional read cleaner when `fastq-mcf` is unavailable. Automatic mode still prefers `fastq-mcf`, and a resumed run never reuses alignments made with a different cleaner.
+* Browser JavaScript and CSS URLs carry a version so an updated page does not reuse stale browser assets.
+* Docker exposes its `/data` bind mount as the named **Data** place in Browse.
+* Cuffmerge uses writable project storage for its temporary files, so quantification works when the application image itself is read-only.
+
+## What is new in versions 9 and 10
+* Drives are handled by platform: WSL can mount and release Windows letters; macOS and Linux list volumes mounted by the operating system.
+* Counts tables without sample sheets infer replicate groups consistently in the page and command-line runner.
+* Input checks catch mistyped conditions and time points, report repaired messy cells, and recognize `CTL` as a control name.
+* PCA can show replicates, condition/time-point averages, or both. Entropy steps can write expression and fold-change heatmaps.
+* GENIST and RTP-STAR write consistently named Cytoscape tables and network images; result browsers include only project outputs and requested extra result folders.
+* Single-cell messages, condition comparisons, GENIST limits, plot labels, and step-dependency explanations are clearer.
 
 ## What is new in version 8 (fixes found by running 40 test experiments)
 * Excel tables with a blank row or several title lines above the header are read correctly.
@@ -22,6 +40,7 @@ that GENIST and RTP-STAR take as input. For now, supply those files yourself (Ex
 * A run started without the page (command line, scheduler) refuses a drive root, a file, or the input folder as the output folder.
 * When quantification fails, the later steps are skipped with a plain message instead of confusing errors.
 * The Python example-data scripts are replaced by R (`make_synthetic.R`, `make_longread_data.R`).
+* Docker's Browse dialog exposes the host bind mount as **Data** and supports dynamically refreshed WSL drive roots.
 
 ## What is new in version 7
 * **Entropy steps from any counts table with replicates** (q-values calculated with DESeq2, cached in the project), from an FPKM table plus Cuffdiff files (any packing: files, folders, zips inside folders inside zips; labels matched by name, folder or expression values), or from long-read counts.
@@ -41,16 +60,15 @@ that GENIST and RTP-STAR take as input. For now, supply those files yourself (Ex
      `softwareupdate --install-rosetta`. Then run `bash setup_wsl.sh` from this folder. The script name is retained for compatibility,
      but it detects macOS and creates the correct environments.
    * Already set up before GENIST/RTP-STAR existed? Run `setup_modules.sh` in the same way to add the analysis packages.
-   * **Docker on an ARM host:** the Ubuntu container must be created with `--platform linux/amd64`; the legacy
-     Cufflinks/ea-utils toolchain has no Linux ARM packages. See `MOVING_TO_ANOTHER_MACHINE.md` for a complete command.
-2. Start StRym: double-click **`start_gui.bat`** on Windows, or run `bash start_gui.sh` on macOS/Linux, then open
-   http://localhost:3838. The **About** page opens first.
+   * **Docker:** see `TEMP_DOCKER_DISTRIBUTION.md`.
+2. Start StRym: double-click **`start_gui.bat`** on Windows, or run `bash start_gui.sh` on macOS/Linux. Open
+   http://localhost:3838; the **About** page appears first.
 3. **Experimental Design** page: describe your experiment and what you want out of it; StRym plans the analysis and
    saves everything in an organized project folder (see below). **Download the sample experiment and fill everything in**
    saves a small made-up study in a `sample_experiment` folder next to StRym and fills in every field for you.
 4. Prefer to do things yourself? Every module is under **Analysis modules** with all its parameters: work left to
    right through *Inputs → Parameters → Run → Results*. GENIST and RTP-STAR have a **Load the Arabidopsis example data** button.
-5. On Windows/WSL, use the **Drives** tab to mount or release external drives. macOS volumes are available normally under `/Volumes`.
+5. On Windows/WSL, use the **Drives** tab to mount or release external drives. macOS volumes are available under `/Volumes`.
 6. Runs happen in the background: close the page and reopen it later to see progress; *Cancel* stops everything.
 
 ## Experimental Design (automatic analysis)
@@ -180,6 +198,7 @@ On Windows, use `wsl -d Ubuntu -u root -e bash tests/run_tests.sh quick`.
 | `genist.R`, `rtpstar.R`, `io_utils.R`, `run_genist_cli.R`, `run_rtpstar_cli.R` | GENIST / RTP-STAR and their runners |
 | `start_gui.bat`, `start_gui.sh`, `stop_gui.sh` | launch / stop on Windows/WSL, Linux, or macOS |
 | `setup_wsl.sh`, `setup_modules.sh` | platform-detecting one-time install / add packages to an existing install |
+| `Dockerfile`, `compose.yaml`, `.dockerignore`, `TEMP_DOCKER_DISTRIBUTION.md` | temporary amd64 container distribution and documentation |
 | `reference/` | Arabidopsis annotation, genome, TF list, gene names (from TuxNet) |
 | `example_data/` | TuxNet's Arabidopsis example data for GENIST and RTP-STAR |
 | `make_synthetic.R`, `make_longread_data.R`, `run_test.sh`, `verify.sh`, `all_tests.sh`, `tests/` | tests |
@@ -187,8 +206,6 @@ On Windows, use `wsl -d Ubuntu -u root -e bash tests/run_tests.sh quick`.
 ## Notes
 * WSL runs as root here and uses `/root/mamba`. macOS uses `~/micromamba`; Apple Silicon runs the Intel-only Bioconda
   packages through Rosetta and keeps the legacy Tuxedo tools separate from current R/Bioconductor packages.
-* Linux containers on Apple Silicon must use the `linux/amd64` platform. `setup_wsl.sh` rejects native Linux ARM early
-  instead of allowing micromamba to fail after dependency resolution.
 * The default WSL memory limit (half of RAM) may be too small for large genomes; raise it in `%UserProfile%\.wslconfig`.
 * Credits: GENIST — M. Angels de Luis Balaguer; RTP-STAR — Natalie M. Clark (MIT license); GENIE3 — Huynh-Thu, Irrthum,
   Wehenkel & Geurts (PLoS ONE 2010); TuxNet — https://github.com/rspurney/TuxNet. The TuxNet repository has no top-level

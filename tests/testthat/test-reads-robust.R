@@ -17,7 +17,7 @@ test_that("mates must be readable and belong together", {
   fq_write(file.path(d, "s1_R1.fastq"), id = function(i) sprintf("@r%d/1", i)); fq_write(file.path(d, "s1_R2.fastq"), id = function(i) sprintf("@r%d/2", i))
   fq_write(file.path(d, "s2_R1.fastq"), id = function(i) sprintf("@x%d 1:N:0", i)); fq_write(file.path(d, "s2_R2.fastq"), id = function(i) sprintf("@y%d 2:N:0", i))   # not the same reads
   s <- normalize_samples(data.frame(group = c("A", "B"), file = file.path(d, c("s1_R1.fastq", "s2_R1.fastq")), mate = file.path(d, c("s1_R2.fastq", "s2_R2.fastq"))), TRUE)
-  v <- validate_samples(s, TRUE); expect_match(paste(v$errors, collapse = " "), "s2_R1.fastq and s2_R2.fastq do not belong together"); expect_false(grepl("s1_R1", paste(v$errors, collapse = " ")))
+  v <- validate_samples(s, TRUE); expect_match(paste(v$warnings, collapse = " "), "s2_R1.fastq and s2_R2.fastq may not belong together"); expect_false(grepl("s1_R1", paste(v$warnings, collapse = " "))); expect_length(v$errors, 0)   # a note the researcher can run past (version 11)
   writeLines(character(), file.path(d, "s2_R2.fastq")); v2 <- validate_samples(s, TRUE); expect_match(paste(v2$errors, collapse = " "), "s2_R2.fastq: .*empty")
 })
 

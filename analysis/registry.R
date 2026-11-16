@@ -24,7 +24,7 @@
   if (identical(d$data_type, "single_cell")) "Not available for single cell/single nucleus data: it reads Tux (Cuffdiff) results from whole organ/tissue RNA-seq."
   else if ((!identical(d$data_kind, "fastq") || identical(d$read_platform, "long")) && !length(d$diff_path)) {              # a table: q-values are calculated with DESeq2 when it holds raw counts with replicates
     why <- strym_derive_possible(d)
-    if (nzchar(why)) paste0("Needs q-values for treated vs control. ", why, " Or start from raw reads (FASTQ) so StRym can run Tux, or add your Cuffdiff results (gene_exp.diff files) under 'Differential-expression results'.")
+    if (nzchar(why)) paste0("Needs q-values for treated vs control (a significance value for every gene). ", why, " Or start from raw reads (FASTQ) so StRym runs the Tux pipeline.")
     else if (d$n_conditions < 2) "Needs a control and a treated condition (at least 2 conditions)."
     else ""
   }
@@ -35,7 +35,7 @@
 strym_steps <- function() list(
   list(id = "quantify", label = "Quantify reads (clean, align, count)", group = "Quantification",
        dir = "01_quantification", script = "quantify.R", fn = "strym_step_quantify",
-       desc = "Turns your FASTQ reads into a counts table with the Tuxedo pipeline (fastq-mcf, HISAT2, Cufflinks, Cuffdiff).",
+       desc = "Turns your FASTQ reads into a counts table with the Tuxedo pipeline (fastq-mcf or fastp, HISAT2, Cufflinks, Cuffdiff).",
        needs_any = character(),
        rule = function(d) list(
          applicable = identical(d$data_kind, "fastq"),
@@ -47,12 +47,14 @@ strym_steps <- function() list(
        desc = "Genes that change between conditions (negative-binomial model).",
        needs_any = character(),
        rule = function(d) list(
-         applicable = d$n_conditions >= 2 && !identical(d$data_type, "single_cell") && !(identical(d$data_kind, "counts") && identical(d$expr_unit, "normalized")),
-         default = "deseq2" %in% d$de_methods && !identical(d$data_type, "single_cell") && !(identical(d$data_kind, "counts") && identical(d$expr_unit, "normalized")),
+         applicable = d$n_conditions >= 2 && !identical(d$data_type, "single_cell") && !(identical(d$data_kind, "counts") && identical(strym_unit_of(d), "normalized")),
+         default = "deseq2" %in% d$de_methods && !identical(d$data_type, "single_cell") && !(identical(d$data_kind, "counts") && identical(strym_unit_of(d), "normalized")),
          fit = d$n_conditions >= 2 && d$data_type == "bulk",
          why = "Compares conditions using raw read counts, so it suits whole organ/tissue experiments with replicates.",
          note = if (identical(d$data_type, "single_cell")) "Not available for single cell/single nucleus data: DESeq2 reads a counts table (genes in rows, one column per sample), not a 10x folder, .h5 file or Seurat object. The Seurat clustering step already compares conditions inside each cluster."
-                else if (identical(d$data_kind, "counts") && identical(d$expr_unit, "normalized")) "DESeq2 needs raw counts, but this table holds normalized values (FPKM / TPM). Use the raw counts if you have them."
+                else if (identical(d$data_kind, "counts") && identical(strym_unit_of(d), "normalized"))
+                  { if (identical(d$expr_unit, "normalized")) "DESeq2 needs raw counts, and you chose “Already normalized” for this table. If the numbers are raw counts, choose “Raw counts”."
+                    else "DESeq2 needs raw counts, but this table has decimal values, so it looks normalized (FPKM / TPM). If it holds expected counts (RSEM, Salmon), choose “Raw counts”." }
                 else if (d$n_conditions < 2) "DESeq2 compares conditions, so it needs at least 2."
                 else "")),
   list(id = "shannon_entropy", label = "Shannon entropy", group = "Differential expression",
@@ -97,7 +99,7 @@ strym_steps <- function() list(
          note = if (identical(d$data_type, "single_cell")) "For single cell/single nucleus data the Seurat step draws its own quality plots." else "")),
   list(id = "pca", label = "PCA", group = "Clustering and plots",
        dir = "04_pca", script = "pca.R", fn = "strym_step_pca",
-       desc = "Principal component analysis of the samples (replicate level): shows how the replicates group and which look like outliers.",
+       desc = "Principal component analysis of the samples: shows how the replicates group and which look like outliers (or, in Analysis settings, one point per condition and time point averaged over the replicates).",
        needs_any = character(),
        rule = function(d) list(applicable = identical(d$data_type, "bulk"), default = "pca" %in% d$plots && identical(d$data_type, "bulk"),
          fit = identical(d$data_type, "bulk"), why = "A quick overview of how your samples group by condition and time point.",

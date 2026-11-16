@@ -1,4 +1,10 @@
-# mod_genist.R -- the GENIST module of StRym (gene regulatory networks from time-course data).
+# mod_genist.R -- the GENIST tab of StRym (gene regulatory networks from time-course data).
+#
+# genist_ui(id)      four tabs: 1 Inputs (start from Tux results, required files, optional files, output), 2 Parameters, 3 Run, 4 Results.
+# genist_server(...) fills the boxes (example data, Tux results, the Arabidopsis TF list and gene names), checks the files while you type (check(): errors block the
+#                    Run button, "notes" such as a missing TF list are only advice), starts run_genist_cli.R in the background, and shows the network (visNetwork),
+#                    the edge table and the clusters. The network table is named after the genes file unless you type a name (strym_network_filename()).
+# The algorithm is in genist.R; this file is only the screen.
 
 cytoscape_note <- function(what) div(class = "card cyto-note", h4(paste("Gene Regulatory Networks with", what)),
   p(style = "margin:0", HTML(paste0("The outputs of ", what, " are designed to be explored in <strong>Cytoscape</strong>. Download the network table and open it in Cytoscape ",
@@ -24,10 +30,11 @@ genist_ui <- function(id) {
             pathUI(ns("clu"), "Clustering data file",
                    help = "Expression across spatial regions / conditions / treatments (gene names in column 1). When given, genes are first grouped into clusters and a network is built per cluster, then joined through cluster hubs."),
             pathUI(ns("tf"), "Transcription factors file",
-                   help = "Gene names in the first column. When given, only these genes can act as regulators."),
+                   help = "Gene names in the first column. When given, only these genes can act as regulators. Optional: without it every gene may regulate every other gene, and the run takes longer."),
             pathUI(ns("sym"), "Gene name file",
                    help = "Gene id in column 1, a readable name (symbol) in column 2; used in the result tables and plot."),
             actionLink(ns("use_tf"), "Use the Arabidopsis TF list"), HTML("&nbsp;·&nbsp;"),
+            actionLink(ns("no_tf"), "No TF list (optional; slower)"), HTML("&nbsp;·&nbsp;"),
             actionLink(ns("use_sym"), "Use the Arabidopsis gene names"))),
         column(6,
           div(class = "card", h4("Output"),
@@ -79,6 +86,7 @@ genist_server <- function(id, roots, app_dir) {
       if (file.exists(ref("GeneNames.xlsx"))) sym$set(ref("GeneNames.xlsx"))
     }, once = TRUE)
     observeEvent(input$use_tf,  tf$set(ref("Arabidopsis_TFs.xlsx")))
+    observeEvent(input$no_tf,   tf$set(""))
     observeEvent(input$use_sym, sym$set(ref("GeneNames.xlsx")))
     ex_t0 <- reactiveVal(NULL)                                                   # after the example is loaded, tick "Replace the existing results" once that box has been redrawn
     observe({ t0 <- ex_t0(); req(!is.null(t0)); el <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
@@ -97,6 +105,17 @@ genist_server <- function(id, roots, app_dir) {
     observeEvent(genes$path(), {
       p <- genes$path()
       if (nzchar(p) && file.exists(p) && !nzchar(isolate(out$path()))) out$set(file.path(dirname(p), "GENIST_results"))
+    })
+    # an informative network table name from the genes file ("<genes file>_GENIST_network_for_Cytoscape.txt") instead of cytoscape_table.txt,
+    # unless the researcher typed their own name or results already exist under the current name (their Results tab keeps working)
+    last_auto <- reactiveVal("")
+    observeEvent(genes$path(), {
+      p <- genes$path(); if (!nzchar(p)) return()
+      new <- strym_network_filename(tools::file_path_sans_ext(basename(p)), "GENIST")
+      cur <- isolate(input$outfile); o <- isolate(out$path())
+      if (!is.null(cur) && cur %in% c("cytoscape_table.txt", isolate(last_auto())) && !(nzchar(o) && file.exists(file.path(o, cur))))
+        updateTextInput(session, "outfile", value = new)
+      last_auto(new)
     })
 
     # ---- start from Tux results: build the genes file and the time course file ----
@@ -194,13 +213,14 @@ genist_server <- function(id, roots, app_dir) {
       if (!num_ok(input$cores, 1)) errs <- c(errs, "Cores must be a whole number of at least 1.")
       if (is.na(input$levels) || input$levels < 2 || input$levels != round(input$levels)) errs <- c(errs, "Discretization levels must be an integer of at least 2.")
       if (exists_prev() && !isTRUE(input$overwrite)) warns <- c(warns, "Results already exist in this folder: tick “Replace the existing results”, or choose another folder.")
-      list(errors = unique(errs), warnings = warns, info = info)
+      notes <- if (!nzchar(tf$path())) "No transcription factor list: every gene can act as a regulator, so the network takes longer to infer (much longer for more than about 100 genes). You can still run it." else character()   # advice only, never blocks
+      list(errors = unique(errs), warnings = warns, info = info, notes = notes)
     })
     output$validation <- renderUI({
-      v <- check()
+      v <- check(); nts <- lapply(v$notes, function(w) div(class = "warn", "⚠ ", w))
       if (!length(v$errors) && !length(v$warnings))
-        return(tagList(div(class = "ok", "✔ Everything looks good."), lapply(v$info, function(i) div(class = "hint", i))))
-      tagList(lapply(v$errors, function(e) div(class = "bad", "✘ ", e)), lapply(v$warnings, function(w) div(class = "warn", "⚠ ", w)),
+        return(tagList(div(class = "ok", "✔ Everything looks good."), nts, lapply(v$info, function(i) div(class = "hint", i))))
+      tagList(lapply(v$errors, function(e) div(class = "bad", "✘ ", e)), lapply(v$warnings, function(w) div(class = "warn", "⚠ ", w)), nts,
               lapply(v$info, function(i) div(class = "hint", i)))
     })
     can_run <- reactive({ v <- check(); !length(v$errors) && !length(v$warnings) })

@@ -19,6 +19,7 @@ test_that("a mounted drive only counts when it answers; the answer can be rememb
 })
 
 test_that("every drive gets a state: ready, not mounted, stale (unplugged and replugged) or removed", {
+  with_platform("wsl", {
   with_mocks(list(.windows_volumes = function() fake_windows(), dir.create = function(...) TRUE,
                   .is_mounted = function(mp) mp %in% c("/mnt/c", "/mnt/d", "/mnt/f"),
                   .wsl_drive_mounts = function() c("/mnt/c", "/mnt/d", "/mnt/f"),
@@ -26,16 +27,18 @@ test_that("every drive gets a state: ready, not mounted, stale (unplugged and re
     d <- list_drives(); st <- setNames(d$state, d$letter)
     expect_equal(st[["C"]], "ready"); expect_equal(st[["D"]], "stale"); expect_equal(st[["E"]], "not mounted"); expect_equal(st[["F"]], "removed")
     expect_equal(d$usable[d$letter == "C"], TRUE); expect_equal(d$usable[d$letter == "D"], FALSE); expect_equal(d$label[d$letter == "F"], "")
-    r <- drive_roots(d)                                                           # a drive Windows no longer has is not offered in Browse…
-    expect_true(all(c("Home", "Root") %in% names(r))); expect_true(all(c("/mnt/c", "/mnt/d", "/mnt/e") %in% r)); expect_false("/mnt/f" %in% r)
-    expect_true("D: LaCie" %in% names(r))
+    r <- strym_places(d)                                                         # a drive Windows no longer has is not offered in Browse…
+    expect_true(all(c(path.expand("~"), "/", "/mnt/c", "/mnt/d", "/mnt/e") %in% r$path)); expect_false("/mnt/f" %in% r$path)
+    expect_true("D:  LaCie" %in% r$label)
   })
   with_mocks(list(.windows_volumes = function() NULL), {                         # Windows cannot be asked: no drive is called "removed"
     expect_false("removed" %in% list_drives()$state)
   })
+  })
 })
 
 test_that("mount_drive reconnects a dead connection, explains failures, and leaves a working drive alone", {
+  with_platform("wsl", {
   expect_false(mount_drive("1")$ok); expect_match(mount_drive("")$message, "Pick a drive letter")
   st <- new.env(); st$mounted <- TRUE; st$dead <- TRUE; st$calls <- list()
   fake <- list(.is_mounted = function(mp) st$mounted, .mount_usable = function(mp, ...) !st$dead, dir.create = function(...) TRUE,
@@ -55,23 +58,28 @@ test_that("mount_drive reconnects a dead connection, explains failures, and leav
     r <- mount_drive("Z"); expect_false(r$ok); expect_match(r$message, "Windows has no drive Z: right now"); expect_match(r$message, "plugged in"); expect_match(r$message, "Refresh")
   })
 })
+  })
 
 test_that("unmount_drive lets go of a drive for ejecting, refuses C:, and detaches a busy one", {
+  with_platform("wsl", {
   expect_false(unmount_drive("C")$ok); expect_match(unmount_drive("C")$message, "system drive"); expect_false(unmount_drive("1")$ok)
   st <- new.env(); st$mounted <- FALSE; st$busy <- FALSE; st$calls <- list()
-  fake <- list(.is_mounted = function(mp) st$mounted,
+  fake <- list(.is_mounted = function(mp) st$mounted, .ps_path = function() NULL,                                   # (no call to Windows in a test)
+               drive_holders = function(mp) data.frame(pid = integer(), command = character(), strym = logical(), stringsAsFactors = FALSE),     # nobody holds it: the busy case below is "busy for an unseen reason"
                system2 = function(cmd, args = character(), ...) {
                  st$calls[[length(st$calls) + 1]] <- c(cmd, args)
                  if (cmd == "umount" && (!st$busy || "-l" %in% args)) st$mounted <- FALSE
                  if (st$busy && !"-l" %in% args) "umount: /mnt/d: target is busy." else character() })
   with_mocks(fake, {
     r <- unmount_drive("D"); expect_true(r$ok); expect_match(r$message, "not connected"); expect_length(st$calls, 0)           # nothing to release
-    st$mounted <- TRUE; r <- unmount_drive("d"); expect_true(r$ok); expect_match(r$message, "Released D:.*eject it in Windows"); expect_length(st$calls, 1)
-    st$mounted <- TRUE; st$busy <- TRUE; st$calls <- list(); r <- unmount_drive("D"); expect_true(r$ok); expect_length(st$calls, 2); expect_equal(st$calls[[2]][2], "-l")
+    st$mounted <- TRUE; r <- unmount_drive("d"); expect_true(r$ok); expect_match(r$message, "Released D:.*eject it in Windows"); expect_length(st$calls, 2); expect_equal(st$calls[[1]][1], "sync"); expect_equal(st$calls[[2]][1], "umount")      # version 11: sync, then a plain umount
+    st$mounted <- TRUE; st$busy <- TRUE; st$calls <- list(); r <- unmount_drive("D"); expect_true(r$ok); expect_match(r$message, "detached"); expect_length(st$calls, 4); expect_equal(st$calls[[4]][2], "-l")      # sync, umount, umount again (a program that was just finishing), then the lazy detach
   })
 })
+  })
 
 test_that("a path on a drive that is not connected, or connected but dead, gets a plain message with the fix", {
+  with_platform("wsl", {
   with_mocks(list(.is_mounted = function(mp) mp == "/mnt/d", .mount_usable = function(mp, ...) FALSE), {
     expect_match(unmounted_drive_problem("/mnt/e/data"), "Drive E: is not connected to StRym yet.*Refresh.*Mount drive")
     expect_match(unmounted_drive_problem("/mnt/d/data/x.csv"), "Drive D: is connected but not responding.*unplugged or ejected.*Mount drive")
@@ -79,6 +87,7 @@ test_that("a path on a drive that is not connected, or connected but dead, gets 
   })
   with_mocks(list(.is_mounted = function(mp) TRUE, .mount_usable = function(mp, ...) TRUE), expect_equal(unmounted_drive_problem("/mnt/d/data"), ""))
 })
+  })
 
 test_that("on this computer the real drive list is sane (skipped outside WSL)", {
   skip_if(!.is_mounted("/mnt/c"), "no /mnt/c here")
@@ -86,5 +95,5 @@ test_that("on this computer the real drive list is sane (skipped outside WSL)", 
   if (nrow(d) && "C" %in% d$letter) expect_equal(d$state[d$letter == "C"], "ready")
   expect_true(mount_drive("C")$ok)
   with_mocks(list(dir.create = function(...) TRUE), { q <- mount_drive("Q"); expect_false(q$ok); expect_match(q$message, "Windows has no drive Q|Could not mount Q") })   # no drive Q: the message says so
-  expect_equal(unmounted_drive_problem("/mnt/c/Users"), ""); expect_true(all(c("Home", "Root") %in% names(drive_roots())))
+  expect_equal(unmounted_drive_problem("/mnt/c/Users"), ""); expect_true(all(c(path.expand("~"), "/") %in% strym_places(d)$path))
 })

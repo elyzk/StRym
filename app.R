@@ -1,15 +1,20 @@
-# StRym (Streamlined transcriptomic Regulatory mapping): Shiny GUI with the TUX (Tuxedo), GENIST and
-# RTP-STAR modules.
-# Launch:  start_gui.bat (Windows)  or  bash start_gui.sh (inside WSL/Linux)
+# StRym (Streamlined transcriptomic Regulatory mapping): the Shiny app.
+#
+# Pages (navigation bar): About, Experimental Design (mod_design.R), Analysis modules (TUX tab written in this file, GENIST in mod_genist.R, RTP-STAR in
+# mod_rtpstar.R) and Drives (drives.R). Long jobs run as separate R processes (jobs.R) so a run keeps going when the page is closed.
+# Order of this file: packages and helper sources, TUX run-state helpers, the Drives page text (it depends on the platform), the page layout (ui), the server.
+# Launch:  start_gui.bat (Windows)  or  bash start_gui.sh (inside WSL/Linux; both start Rscript and serve http://localhost:3838).
 suppressPackageStartupMessages({
-  library(shiny); library(shinyFiles); library(DT); library(processx); library(jsonlite)
+  library(shiny); library(DT); library(processx); library(jsonlite)
 })
+if (!exists("%||%")) `%||%` <- function(a, b) if (is.null(a)) b else a          # base R from 4.4
 options(shiny.maxRequestSize = 600 * 1024^2)                 # small dropped files that cannot be located are uploaded (never FASTQ-sized ones)
 app_dir <- normalizePath(if (exists("app_dir_override")) app_dir_override else getwd())
-for (f in c("tuxedo.R", "drives.R", "io_utils.R", "jobs.R", "genist.R", "rtpstar.R", "pipeline.R", "gui_helpers.R",
+for (f in c("tuxedo.R", "drives.R", "io_utils.R", "jobs.R", "genist.R", "rtpstar.R", "pipeline.R", "filebrowser.R", "gui_helpers.R",
             "about.R", "mod_genist.R", "mod_rtpstar.R", "mod_design.R")) source(file.path(app_dir, f))
 strym_load_registry(app_dir)                                 # analysis steps + rules (analysis/registry.R)
-invisible(try(list_drives_cached(), silent = TRUE))         # ask Windows about the drives once now (a few seconds): the Browse windows then never have to wait for it
+invisible(try(drives_nowait(), silent = TRUE))                # ask Windows about the drives in the BACKGROUND (a few seconds): starting the app and opening a Browse window never wait for it
+invisible(try({ strym_places(); strym_list_dir(path.expand("~")) }, silent = TRUE))        # first use of the pieces behind the Browse window now, so the first click is as quick as the rest
 
 STATE_DIR  <- path.expand("~/.tuxnet_r")                    # lives on the Linux disk
 STATE_FILE <- file.path(STATE_DIR, "run_state.json")
@@ -19,13 +24,7 @@ STEP_LABELS <- c("Cleaning and aligning reads", "Assembling transcripts",
                  "Merging assemblies", "Differential expression")
 
 # ---- run-state helpers (a run keeps going if the browser tab is closed) ----
-pid_alive <- function(pid) {
-  f <- sprintf("/proc/%d/stat", pid)
-  if (!file.exists(f)) return(FALSE)
-  if (sub(".*\\) (.).*", "\\1", readLines(f, warn = FALSE)[1]) == "Z") return(FALSE)
-  cl <- tryCatch(readBin(sprintf("/proc/%d/cmdline", pid), "raw", 4096), error = function(e) raw())
-  grepl("run_cli", rawToChar(cl[cl != as.raw(0)]), fixed = TRUE)   # guards against pid reuse
-}
+pid_alive <- function(pid) pid_alive_pattern(pid, "run_cli")       # works with /proc (Linux, WSL) and with ps (macOS); the pattern guards against pid reuse
 load_state <- function() if (file.exists(STATE_FILE)) tryCatch(fromJSON(STATE_FILE), error = function(e) NULL)
 run_outcome <- function(logfile) {                            # "ok" | "failed" | "cancelled"
   txt <- if (file.exists(logfile)) paste(readLines(logfile, warn = FALSE), collapse = "\n") else ""
@@ -33,45 +32,63 @@ run_outcome <- function(logfile) {                            # "ok" | "failed" 
   else if (grepl("ERROR:", txt, fixed = TRUE)) "failed" else "cancelled"
 }
 
-drives_card <- div(class = "card", h4("Drives"),
+# ---- the Drives page: what is shown depends on the platform (see strym_platform() in drives.R) ----------------------------------------------
+# Windows (StRym inside WSL): drives need to be mounted into Ubuntu, so there are Mount / Release buttons. Mac and Linux: the system mounts the
+# drives; the page only lists them. Only the headings are bold; the longer instructions belong in the protocol.
+platform <- strym_platform()
+drives_intro <- switch(platform,
+  wsl = "StRym can use every drive that Windows can see. A drive plugged in after StRym started has to be mounted once.",
+  mac = "The drives your Mac has mounted are listed here (they live under /Volumes).",
+  windows = "The drives that have a letter are listed here.",
+  "The drives your system has mounted are listed here (usually under /media, /run/media or /mnt).")
+drives_card <- div(class = "card", h4("Drives"), p(class = "hint", drives_intro),
   tableOutput("drives"),
-  fluidRow(
+  if (platform == "wsl") fluidRow(
     column(5, selectInput("mount_letter", "Drive", choices = "…", width = "100%")),
     column(7, div(style = "margin-top:25px",
-                  actionButton("mount", "Mount drive"), actionButton("unmount", "Release drive"), actionButton("drives_refresh", "Refresh")))),
+                  actionButton("mount", "Mount drive"), actionButton("unmount", "Release drive"), actionButton("drives_refresh", "Refresh"))))
+  else actionButton("drives_refresh", "Refresh"),
   uiOutput("mount_msg"))
 
-drives_help <- div(class = "card", h4("How to use this page"),
-  tags$b("Using an external drive"),
+drives_help <- if (platform == "wsl") { div(class = "card", h4("Using an external drive"),
   tags$ol(
     tags$li("Plug the drive in and wait until Windows File Explorer shows it."),
-    tags$li(HTML("Press <b>Refresh</b>. The drive appears in the table above. A drive that was already plugged in when Ubuntu started is <i>ready</i> by itself.")),
-    tags$li(HTML("If its status says <b>not mounted</b>, pick it in the <b>Drive</b> box and press <b>Mount drive</b>. When the status says <b>ready</b>, every part of StRym can use it: ",
-                 "type a path such as <code>D:\\data</code> in any box, or use <b>Browse…</b> (the drive is in the list).")),
-    tags$li(HTML("If the status says <b>needs reconnecting</b> (the drive was unplugged or ejected and plugged back in), pick it and press <b>Mount drive</b> again. ",
-                 "StRym drops the dead connection and connects the drive again.")),
-    tags$li(HTML("If the status says <b>removed</b>, the drive is no longer plugged in: press <b>Release drive</b> to clear it."))),
-  tags$b("Before you unplug or eject a drive"),
+    tags$li("Press Refresh. If the status says not mounted or needs reconnecting, select the drive and press Mount drive."),
+    tags$li(HTML("When the status says ready, type a path such as <code>D:\\data</code> in any box, or use Browse."))),
+  h4("Before you unplug it"),
   tags$ol(
-    tags$li("Make sure no StRym run is using it (a run keeps going in the background, so check the Run section of the page you started it from)."),
-    tags$li(HTML("Pick the drive here and press <b>Release drive</b>. StRym lets go of it.")),
-    tags$li("Then eject it in Windows (the “Safely Remove Hardware” icon in the taskbar).")),
-  tags$b("If it still does not work"),
+    tags$li("Make sure no StRym run is using the drive."),
+    tags$li("Select it here and press Release drive, then eject it in Windows.")),
+  h4("If it does not work"),
   tags$ul(
-    tags$li("Does Windows File Explorer show the drive? If not, the problem is the drive, the cable or the port, not StRym. Open Windows Disk Management and check the disk is online and has a drive letter."),
-    tags$li("Close any File Explorer window showing the drive, press Refresh, then Mount drive again."),
-    tags$li(HTML("Windows still refuses to eject it after you pressed <b>Release drive</b>? Something on Windows is using it (a File Explorer window, a preview pane, antivirus or a backup program). ",
-                 "Close those, or open Disk Management, right-click the disk and choose <b>Offline</b>, then unplug it.")),
-    tags$li(HTML("Last resort: restart Ubuntu. Close this page, open <b>PowerShell</b>, type <code>wsl --shutdown</code>, press Enter, and start StRym again with <code>start_gui.bat</code>. ",
-                 "A run in progress stops (results already saved are kept). If this does not work either, restart the computer."))),
-  p(class = "hint", "A drive plugged in after Ubuntu started needs Mount drive once. Windows decides the letter (D:, E:, …): after replugging, check the table, because the letter can change."))
+    tags$li("Check that File Explorer shows the drive and that it has a drive letter."),
+    tags$li("Press Refresh and try Mount drive again."),
+    tags$li(HTML("As a last resort close this page, run <code>wsl --shutdown</code> in PowerShell and start StRym again. A run in progress stops; saved results are kept."))),
+  p(class = "hint", "The protocol document has the full details, with screenshots."))
+} else { div(class = "card", h4("Using an external drive"),
+  tags$ol(
+    tags$li("Plug the drive in and wait until it appears in your file manager."),
+    tags$li("Press Refresh. The drive is listed with its folder."),
+    tags$li(HTML(sprintf("Type a path such as <code>%s</code> in any box, or use Browse.",
+                         switch(platform, mac = "/Volumes/MyDrive/data", windows = "D:/data", "/media/me/MyDrive/data"))))),
+  h4("Before you unplug it"),
+  tags$ol(
+    tags$li("Make sure no StRym run is using the drive."),
+    tags$li(switch(platform, mac = "Eject it in Finder.", windows = "Eject it with Safely Remove Hardware.", "Unmount or eject it in your file manager."))),
+  h4("If it does not appear"),
+  tags$ul(
+    tags$li("Check that your file manager shows the drive."),
+    if (platform == "linux") tags$li(HTML("If it is not mounted, mount it in the file manager or with <code>mount</code>, then press Refresh.")),
+    tags$li("Press Refresh again after reconnecting the drive.")),
+  p(class = "hint", "The protocol document has the full details."))
+}
 
 ui <- navbarPage(
   title = tags$img(src = "strym-logo-white.png", alt = "StRym"), id = "module", windowTitle = "StRym",
   selected = "About", collapsible = TRUE,
   header = tags$head(
-    tags$link(rel = "icon", type = "image/png", href = "favicon.png"), tags$link(rel = "apple-touch-icon", href = "favicon-192.png"),
-    tags$link(rel = "stylesheet", href = "strym.css"), tags$script(src = "strym.js"),
+    tags$link(rel = "icon", type = "image/png", href = "favicon.png?v=9b"), tags$link(rel = "apple-touch-icon", href = "favicon-192.png?v=9b"),   # ?v=9b: browsers cache tab icons hard
+    tags$link(rel = "stylesheet", href = "strym.css?v=11"), tags$script(src = "strym.js?v=11"),                  # ?v=11: a browser keeps old copies of these files; a new number makes it fetch the new ones
     tags$script(HTML("Shiny.addCustomMessageHandler('tux-toggle',function(m){
       var e=document.getElementById(m.id); if(e){e.disabled=!m.enable;}});
       setInterval(function(){document.querySelectorAll('pre.log').forEach(function(e){e.scrollTop=e.scrollHeight;});},800);"))),
@@ -84,9 +101,8 @@ ui <- navbarPage(
         column(6,
           div(class = "card", h4("Data"),
             textInput("dir_txt", "Folder with FASTQ files (read-only)", "", width = "100%",
-                      placeholder = "Paste a path (D:\\data or /mnt/d/data) or browse"),
-            shinyDirButton("dir_in", "Browse…", "Select folder with FASTQ files"),
-            uiOutput("quick_roots"),
+                      placeholder = path_placeholder("")),
+            actionButton("dir_in", "Browse…", class = "btn-default btn-sm"),
             p(class = "hint", "Either all FASTQ files in one folder (groups are guessed from file names ",
               "and can be edited), or one sub-folder per condition."),
             radioButtons("read_type", "Read type",
@@ -94,12 +110,12 @@ ui <- navbarPage(
                            "Paired-end (mates named A_/B_, _R1/_R2 or _1/_2)" = "paired"))),
           div(class = "card", h4("Reference"),
             textInput("gtf_txt", "Annotation (GTF/GFF)", "", width = "100%"),
-            shinyFilesButton("gtf", "Browse…", "Select GTF/GFF", FALSE),
+            actionButton("gtf", "Browse…", class = "btn-default btn-sm"),
             textInput("fasta_txt", "Genome (FASTA, uncompressed)", "", width = "100%"),
-            shinyFilesButton("fasta", "Browse…", "Select FASTA", FALSE)),
+            actionButton("fasta", "Browse…", class = "btn-default btn-sm")),
           div(class = "card", h4("Output"),
             textInput("out_txt", "Output folder (can be on any drive with enough space)", "", width = "100%"),
-            shinyDirButton("out_in", "Browse…", "Select output folder"),
+            actionButton("out_in", "Browse…", class = "btn-default btn-sm"),
             div(class = "path", textOutput("out_win", inline = TRUE)))),
         column(6,
           div(class = "card", h4("Checks"), uiOutput("validation")),
@@ -110,11 +126,12 @@ ui <- navbarPage(
     tabPanel("2 · Settings", br(),
       fluidRow(
         column(6, div(class = "card",
-          h4("Read cleaning (fastq-mcf)"),
-          numericInput("q", "Quality threshold (-q)", 30, 0, 41, 1),
-          numericInput("l", "Minimum sequence length (-l)", 30, 1, 500, 1),
-          numericInput("w", "Window size (-w)", 5, 1, 100, 1),
-          p(class = "hint", "TuxNet defaults: 30 / 30 / 5."))),
+          h4("Read cleaning"),
+          selectInput("cleaner", "Cleaning program", c("Automatic" = "auto", "fastq-mcf (TuxNet)" = "fastq-mcf", "fastp (optional)" = "fastp"), "auto"),
+          numericInput("q", "Quality threshold", 30, 0, 41, 1),
+          numericInput("l", "Minimum sequence length", 30, 1, 500, 1),
+          numericInput("w", "Window size", 5, 1, 100, 1),
+          p(class = "hint", "TuxNet defaults: 30 / 30 / 5. Automatic uses fastq-mcf when it is installed and fastp otherwise (macOS has no fastq-mcf). The two programs trim slightly differently, so results can differ a little between them."))),
         column(6, div(class = "card",
           h4("Compute"),
           numericInput("threads", "Threads", default_threads, min = 1, max = max(1L, parallel::detectCores()), step = 1),
@@ -140,20 +157,22 @@ ui <- navbarPage(
                  column(5, br(), checkboxInput("sig_only", "Only significant genes (q < 0.05)", FALSE))),
         DTOutput("results"),
         downloadButton("dl", "Download table (CSV)")),
-      div(class = "card", h4("Volcano plot"), plotOutput("volcano", height = 380)))
+      div(class = "card", h4("Volcano plot"), plotOutput("volcano", height = 380)),
+      div(class = "card", h4("Inputs for RTP-STAR"), uiOutput("rtp_inputs")))
   )),
   tabPanel("GENIST", genist_ui("genist")),
   tabPanel("RTP-STAR", rtpstar_ui("rtp"))),
   tabPanel("Drives", br(), fluidRow(column(8, drives_card, drives_help))),
   footer = div(class = "strym-footer",
-    "StRym was developed by Jordan Reed & Stephanie M. Stewart. ",
+    "StRym version 11. StRym was developed by Jordan Reed & Stephanie M. Stewart. ",
     "The platform is being maintained by the Sozzani lab at NC State University.")
 )
 
 server <- function(input, output, session) {
-  roots <- function() drive_roots()   # a function: the Browse… windows ask for the drive list each time they open, so a drive mounted later shows up at once
+  roots <- NULL   # the modules still take this argument, but the Browse window (filebrowser.R) builds its own list of places
   genist_server("genist", roots, app_dir)
-  rtpstar_server("rtp", roots, app_dir)
+  tux_to_rtp <- reactiveVal(NULL)                                               # set by "Use them in the RTP-STAR tab" on the TUX results page
+  rtpstar_server("rtp", roots, app_dir, from_tux = tux_to_rtp)
   design_server("design", roots, app_dir)
   observeEvent(input$go_design, updateNavbarPage(session, "module", "Experimental Design"))   # About page button
   # reopened page: open the module whose run is still going (TUX handles its own tab below)
@@ -162,25 +181,27 @@ server <- function(input, output, session) {
     else if (job_alive(job_load("rtpstar"), "run_rtpstar_cli.R")) updateNavbarPage(session, "module", "RTP-STAR")
     else if (job_alive(job_load("genist"), "run_genist_cli.R")) updateNavbarPage(session, "module", "GENIST")
   }, once = TRUE)
-  shinyDirChoose(input, "dir_in", roots = roots)
-  shinyDirChoose(input, "out_in", roots = roots)
-  shinyFileChoose(input, "gtf", roots = roots, filetypes = c("gtf", "gff", "gff3"))
-  shinyFileChoose(input, "fasta", roots = roots, filetypes = c("fa", "fasta", "fna"))
+  br <- strym_browser_attach(input, output, session, key = "tuxbf")       # the Browse window (filebrowser.R), shared by the four pickers of the TUX tab
 
   # ---- drives ----
   drives_tick <- reactiveVal(0)
-  drives <- reactive({ tk <- drives_tick(); if (tk > 0) refresh_drives(); list_drives_cached(ttl = if (tk > 0) 8 else 300) })   # opening the page uses the answer from startup; only Refresh / Mount asks Windows again
-  drive_status <- function(d) ifelse(d$state == "ready", paste("ready:", d$mount),
+  drives_seen <- reactiveVal(0)
+  drives <- reactive({                                                          # never waits for Windows: the table appears at once and fills in when the background answer arrives
+    drives_tick(); invalidateLater(if (drives_pending()) 1500 else 15000)
+    drives_for_table()
+  })
+  drive_status <- function(d) if (platform != "wsl") ifelse(d$state == "ready", "ready", "not responding: plug it in again, then press Refresh") else ifelse(d$state == "ready", paste("ready:", d$mount),
                               ifelse(d$state == "stale", "needs reconnecting: press Mount drive",
                               ifelse(d$state == "removed", "removed from Windows: press Release drive", "not mounted: press Mount drive")))
   output$drives <- renderTable({
     d <- drives()
-    shiny::validate(shiny::need(nrow(d) > 0, "No Windows drives found. Press Refresh; if the drive is plugged in, see “If it still does not work” below."))
-    data.frame(Drive = paste0(d$letter, ":"), Name = d$label,
+    shiny::validate(shiny::need(nrow(d) > 0, if (platform == "wsl") "No Windows drives found. Press Refresh; if the drive is plugged in, see “If it does not work” below." else "No external drives found. Plug the drive in and press Refresh."))
+    data.frame(Drive = if (platform == "wsl") paste0(d$letter, ":") else d$mount, Name = d$label,
                Size = ifelse(is.na(d$size), "", vapply(d$size, fmt_bytes, "")), Free = ifelse(is.na(d$free), "", vapply(d$free, fmt_bytes, "")),
                Status = drive_status(d))
   })
-  observe({                                                                    # every drive except C: (the Windows system drive, always connected)
+  observe({                                                                    # every drive except C: (the Windows system drive, always connected); only on WSL, where drives are mounted by hand
+    req(platform == "wsl")
     d <- drives(); d <- d[d$letter != "C", , drop = FALSE]
     if (!nrow(d)) return(updateSelectInput(session, "mount_letter", choices = c("(no other drives found)" = "")))
     nm <- paste0(d$letter, ":", ifelse(nzchar(d$label), paste0(" ", d$label), ""), " (", c(ready = "ready", `not mounted` = "not mounted", stale = "needs reconnecting", removed = "removed")[d$state], ")")
@@ -190,43 +211,26 @@ server <- function(input, output, session) {
   mount_msg <- reactiveVal(NULL)
   observeEvent(input$mount, {
     if (!nzchar(input$mount_letter)) return(mount_msg(list(ok = FALSE, message = "There is no drive to mount. Plug the drive in, then press Refresh.")))
-    r <- mount_drive(input$mount_letter); mount_msg(r); drives_tick(drives_tick() + 1)
+    nid <- showNotification("Connecting the drive…", duration = NULL, closeButton = FALSE, type = "message"); r <- mount_drive(input$mount_letter); removeNotification(nid); mount_msg(r); drives_tick(drives_tick() + 1)
   })
   observeEvent(input$unmount, {
     if (!nzchar(input$mount_letter)) return(mount_msg(list(ok = FALSE, message = "Pick the drive to release in the Drive box.")))
     busy <- job_alive(job_load("analysis"), "run_analysis_cli.R") || job_alive(job_load("rtpstar"), "run_rtpstar_cli.R") ||
             job_alive(job_load("genist"), "run_genist_cli.R") || (!is.null(load_state()$pid) && pid_alive(load_state()$pid))
     if (busy) return(mount_msg(list(ok = FALSE, message = "A StRym run is in progress, and it may be using this drive. Wait for it to finish (or cancel it) before releasing a drive.")))
-    r <- unmount_drive(input$mount_letter); mount_msg(r); drives_tick(drives_tick() + 1)
+    nid <- showNotification("Releasing the drive…", duration = NULL, closeButton = FALSE, type = "message"); r <- unmount_drive(input$mount_letter); removeNotification(nid); mount_msg(r); drives_tick(drives_tick() + 1)
   })
-  observeEvent(input$drives_refresh, { drives_tick(drives_tick() + 1); mount_msg(NULL) })
+  observeEvent(input$drives_refresh, { refresh_drives(); drives_tick(drives_tick() + 1); mount_msg(NULL) })
   output$mount_msg <- renderUI({
     r <- mount_msg(); if (is.null(r)) return(NULL)
     div(class = if (r$ok) "ok" else "bad", r$message)
   })
 
-  # The folder picker can only select a folder you click inside, so offer one-click shortcuts
-  # for a drive's top level (where loose FASTQ files often live).
-  output$quick_roots <- renderUI({
-    d <- drives(); d <- d[d$state == "ready", , drop = FALSE]
-    if (!nrow(d)) return(NULL)
-    links <- lapply(seq_len(nrow(d)), function(i) tags$a(
-      href = "#", style = "margin-right:12px",
-      onclick = sprintf("Shiny.setInputValue('quick_in','%s',{priority:'event'});return false;", d$mount[i]),
-      sprintf("%s:\\ %s", d$letter[i], d$label[i])))
-    div(class = "hint", style = "margin-top:6px", "Or use a drive's top level: ", links)
-  })
-  observeEvent(input$quick_in, updateTextInput(session, "dir_txt", value = input$quick_in))
-
   # ---- paths: Browse buttons fill the text boxes, which are the source of truth ----
-  observeEvent(input$dir_in, if (is.list(input$dir_in))
-    updateTextInput(session, "dir_txt", value = as.character(parseDirPath(roots, input$dir_in))))
-  observeEvent(input$out_in, if (is.list(input$out_in))
-    updateTextInput(session, "out_txt", value = as.character(parseDirPath(roots, input$out_in))))
-  observeEvent(input$gtf, if (is.list(input$gtf))
-    updateTextInput(session, "gtf_txt", value = as.character(parseFilePaths(roots, input$gtf)$datapath)))
-  observeEvent(input$fasta, if (is.list(input$fasta))
-    updateTextInput(session, "fasta_txt", value = as.character(parseFilePaths(roots, input$fasta)$datapath)))
+  observeEvent(input$dir_in, br$open("dir", "Choose the folder with the FASTQ files", start = isolate(input$dir_txt), cb = function(p) updateTextInput(session, "dir_txt", value = p[1])))
+  observeEvent(input$out_in, br$open("dir", "Choose the output folder", start = isolate(input$out_txt), cb = function(p) updateTextInput(session, "out_txt", value = p[1])))
+  observeEvent(input$gtf, br$open("file", "Choose the annotation (GTF / GFF)", exts = c("gtf", "gff", "gff3"), start = isolate(input$gtf_txt), cb = function(p) updateTextInput(session, "gtf_txt", value = p[1])))
+  observeEvent(input$fasta, br$open("file", "Choose the genome (FASTA)", exts = c("fa", "fasta", "fna"), start = isolate(input$fasta_txt), cb = function(p) updateTextInput(session, "fasta_txt", value = p[1])))
 
   inputs_folder <- reactive(clean_path(input$dir_txt))
   out_folder    <- reactive(clean_path(input$out_txt))
@@ -243,9 +247,9 @@ server <- function(input, output, session) {
       auto_out(file.path(f, "tuxedo_results")); updateTextInput(session, "out_txt", value = auto_out())
     }
   })
-  output$out_win <- renderText(if (nzchar(out_folder())) paste("Windows path:", to_windows_path(out_folder())) else "")
+  output$out_win <- renderText(if (nzchar(out_folder()) && strym_is_wsl()) paste("Windows path:", to_windows_path(out_folder())) else "")
 
-  tools <- reactive(check_tools(tool_dir()))
+  tools <- reactive(check_tools(tool_dir(), input$cleaner %||% "auto"))
   output$tools_status <- renderUI({
     t <- tools()
     if (all(t$found)) div(class = "ok", "✔ All 7 required tools found.")
@@ -333,6 +337,8 @@ server <- function(input, output, session) {
       return(tagList(div(class = "ok", "✔ Everything looks good."), lapply(v$info, function(i) div(class = "hint", i))))
     tagList(lapply(v$errors, function(e) div(class = "bad", "✘ ", e)),
             lapply(v$warnings, function(w) div(class = "warn", "⚠ ", w)),
+            # notes (warnings) are advice, not blockers: the researcher can read them and run anyway. Errors cannot be bypassed.
+            if (!length(v$errors) && length(v$warnings)) checkboxInput("ack_warn", "Run anyway: I have read the notes above", value = isTRUE(isolate(input$ack_warn))),
             lapply(v$info, function(i) div(class = "hint", i)))
   })
 
@@ -346,10 +352,11 @@ server <- function(input, output, session) {
     if (state_alive(rv$state)) "running" else run_outcome(rv$state$log)
   })
 
-  can_run <- reactive(length(validation()$errors) == 0 && !length(validation()$warnings) && !running())
+  can_run <- reactive(length(validation()$errors) == 0 && (!length(validation()$warnings) || isTRUE(input$ack_warn)) && !running())
   output$run_gate <- renderUI({
     if (running()) div(class = "running", "Running…")
     else if (can_run()) div(class = "ok", "Ready to run.")
+    else if (length(validation()$errors) == 0 && length(validation()$warnings)) div(class = "warn", "Read the notes on tab 1, then tick “Run anyway” if they are fine.")
     else div(class = "bad", "Not ready — see the checks on tab 1.")
   })
   observe({
@@ -364,13 +371,13 @@ server <- function(input, output, session) {
                 gtf_file = gtf_path(), fasta_file = fasta_path(), read_type = input$read_type,
                 samples = s[, c("group", "file", "mate")],
                 quality_thresh = input$q, min_seq_length = input$l, window_size = input$w,
-                threads = whole_threads(input$threads), adapter_fasta = file.path(app_dir, "IlluminaAdaptorSeq.fasta"),
+                cleaner = input$cleaner %||% "auto", threads = whole_threads(input$threads), adapter_fasta = file.path(app_dir, "IlluminaAdaptorSeq.fasta"),
                 tool_dir = if (is.null(tool_dir())) "" else tool_dir(),
                 keep_cleaned = isTRUE(input$keep_cleaned), skip_space_check = isTRUE(input$skip_space))
     cfgfile <- file.path(STATE_DIR, "run_config.json")
     write_json(cfg, cfgfile, auto_unbox = TRUE, na = "null")
     logfile <- file.path(STATE_DIR, "last_run.log")
-    extra <- if (!is.null(tool_dir())) paste(file.path(tool_dir(), c("ea-utils/clipper", "hisat2", "samtools", "cufflinks")), collapse = ":")
+    extra <- if (!is.null(tool_dir())) paste(file.path(tool_dir(), c("ea-utils/clipper", ".", "hisat2", "samtools", "cufflinks")), collapse = ":")
     p <- process$new("Rscript", c(file.path(app_dir, "run_cli.R"), cfgfile),
                      stdout = logfile, stderr = "2>&1", cleanup = FALSE, cleanup_tree = FALSE,
                      env = c(Sys.getenv(), PATH = paste(c(Sys.getenv("PATH"), extra), collapse = ":")))
@@ -462,6 +469,28 @@ server <- function(input, output, session) {
   })
   output$results <- renderDT(datatable(shown(), rownames = FALSE, options = list(pageLength = 15)) |>
                                formatSignif(c("value_1", "value_2", "log2FC", "p_value", "q_value"), 3))
+  # The genes file and the expression file RTP-STAR needs, written at the end of the Tux run (tux_write_rtpstar_inputs in tuxedo.R)
+  rtp_dir <- reactive({ rv$done_tick; drives_tick(); file.path(out_folder(), "rtpstar_inputs") })
+  rtp_files <- reactive({ d <- rtp_dir(); g <- file.path(d, "rtpstar_genes_from_tux.csv"); e <- file.path(d, "rtpstar_expression_from_tux.csv")
+    if (file.exists(g) && file.exists(e)) list(genes = g, expr = e, readme = file.path(d, "README_rtpstar_inputs.txt")) })
+  output$rtp_inputs <- renderUI({
+    f <- rtp_files(); d <- rtp_dir(); nm <- file.path(d, "rtpstar_inputs_NOT_made.txt")
+    if (!is.null(f)) {
+      sm <- if (file.exists(f$readme)) { l <- readLines(f$readme, warn = FALSE); l[grepl("differentially expressed genes", l)][1] } else NA_character_
+      return(tagList(
+        p(class = "hint", "Made from these results for the RTP-STAR tab: a genes file (the differentially expressed genes) and a gene expression file (one column per sample)."),
+        if (!is.na(sm)) div(class = "ok", style = "font-weight:400", sm),
+        div(class = "path", to_windows_path(d)),
+        downloadButton("dl_rtp_genes", "Download the genes file", class = "btn-default btn-sm"), downloadButton("dl_rtp_expr", "Download the expression file", class = "btn-default btn-sm"), " ",
+        actionButton("rtp_use", "Use them in the RTP-STAR tab", class = "btn-primary btn-sm"),
+        p(class = "hint", style = "margin-top:6px", "Other cutoffs? Open the RTP-STAR tab and build them again under “Start from your Tux results”.")))
+    }
+    if (file.exists(nm)) return(div(class = "warn", "⚠ ", paste(readLines(nm, warn = FALSE), collapse = " ")))
+    div(class = "hint", "They are made at the end of a Tux run (genes file + gene expression file for RTP-STAR). None yet in this output folder.")
+  })
+  output$dl_rtp_genes <- downloadHandler("rtpstar_genes_from_tux.csv", function(file) file.copy(rtp_files()$genes, file, overwrite = TRUE))
+  output$dl_rtp_expr <- downloadHandler("rtpstar_expression_from_tux.csv", function(file) file.copy(rtp_files()$expr, file, overwrite = TRUE))
+  observeEvent(input$rtp_use, { f <- rtp_files(); req(f); tux_to_rtp(list(genes = f$genes, expr = f$expr)); updateNavbarPage(session, "module", "RTP-STAR") })
   output$dl <- downloadHandler("tuxedo_differential_expression.csv",
                                function(file) write.csv(shown(), file, row.names = FALSE))
   output$volcano <- renderPlot({

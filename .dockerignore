@@ -1,0 +1,9 @@
+.git
+.gitignore
+.gitattributes
+.Rhistory
+.Rproj.user
+.DS_Store
+**/.DS_Store
+*.log
+strym-data
