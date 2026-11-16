@@ -7,3 +7,5 @@
 **/.DS_Store
 *.log
 strym-data
+TEMP_DOCKER_DISTRIBUTION.md
+SIMPLE_SCRIPT_IMPROVEMENTS.md
