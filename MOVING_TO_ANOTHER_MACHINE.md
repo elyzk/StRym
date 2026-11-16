@@ -19,7 +19,7 @@ This zip holds **the program** (R code, the browser interface, the analysis step
    *To reproduce the exact versions used here* (R 4.2.2, samtools 1.16.1, HISAT2 2.2.3, Cufflinks 2.2.1, Seurat 5.1.0, DESeq2 1.38.0 ...)
    use the recorded environment instead of the script's "latest compatible" choice: inside WSL, with `MAMBA_ROOT_PREFIX=/root/mamba`,
    `micromamba create -n tuxnet --file environment-linux-64-explicit.txt` (exact builds) or `-f environment.yml` (exact versions).
-4. Start StRym: double-click `start_gui.bat` (it starts the server in WSL and opens http://localhost:3838). Close its window to stop it.
+4. Start StRym: double-click `start_gui.bat` (it starts the server in WSL and opens http://localhost:3838). To use another port, first run `$env:STRYM_PORT = "43839"` in PowerShell and launch the batch file from that PowerShell session. Close the server window to stop it.
 5. Check it works: `wsl -d Ubuntu -u root -e bash tests/run_tests.sh` (about 10–15 minutes; it prints `PASSED: ... FAILED: 0`).
    Single groups of tests: `bash tests/run_tests.sh baselines`, `... pipeline`, `... resume` and so on (the name after `test-`).
 
@@ -35,7 +35,7 @@ http://localhost:3838. The WSL-specific parts (the Drives tab, `/mnt/c` paths) a
 3. From the StRym folder, run `bash setup_wsl.sh`. Despite its historical name, the script detects macOS. It creates
    `~/micromamba/envs/tuxnet` for R and `~/micromamba/envs/tuxnet-tools` for the legacy Tuxedo executables. Intel-only
    Bioconda packages run through Rosetta; `fastq-mcf` is built natively from the pinned ea-utils source.
-4. Run `bash start_gui.sh`, then open http://localhost:3838. Stop it with `bash stop_gui.sh` or Ctrl-C.
+4. Run `bash start_gui.sh`, then open http://localhost:3838. For another port, use `STRYM_PORT=43839 bash start_gui.sh`; stop it with `STRYM_PORT=43839 bash stop_gui.sh` or Ctrl-C.
 5. Check the installation with `bash tests/run_tests.sh quick`.
 
 ## Practical notes

@@ -3,7 +3,7 @@
 # Pages (navigation bar): About, Experimental Design (mod_design.R), Analysis modules (TUX tab written in this file, GENIST in mod_genist.R, RTP-STAR in
 # mod_rtpstar.R) and Drives (drives.R). Long jobs run as separate R processes (jobs.R) so a run keeps going when the page is closed.
 # Order of this file: packages and helper sources, TUX run-state helpers, the Drives page text (it depends on the platform), the page layout (ui), the server.
-# Launch:  start_gui.bat (Windows)  or  bash start_gui.sh (inside WSL/Linux; both start Rscript and serve http://localhost:3838).
+# Launch: start_gui.bat on Windows or bash start_gui.sh on WSL/Linux/macOS. Set STRYM_PORT to change the default http://localhost:3838 address.
 suppressPackageStartupMessages({
   library(shiny); library(DT); library(processx); library(jsonlite)
 })

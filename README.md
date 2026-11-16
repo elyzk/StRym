@@ -62,7 +62,8 @@ that GENIST and RTP-STAR take as input. For now, supply those files yourself (Ex
    * Already set up before GENIST/RTP-STAR existed? Run `setup_modules.sh` in the same way to add the analysis packages.
    * **Docker:** see `TEMP_DOCKER_DISTRIBUTION.md`.
 2. Start StRym: double-click **`start_gui.bat`** on Windows, or run `bash start_gui.sh` on macOS/Linux. Open
-   http://localhost:3838; the **About** page appears first.
+   http://localhost:3838; the **About** page appears first. To use another port, set `STRYM_PORT` before launching—for example,
+   `STRYM_PORT=43839 bash start_gui.sh`. Stop that instance with `STRYM_PORT=43839 bash stop_gui.sh`.
 3. **Experimental Design** page: describe your experiment and what you want out of it; StRym plans the analysis and
    saves everything in an organized project folder (see below). **Download the sample experiment and fill everything in**
    saves a small made-up study in a `sample_experiment` folder next to StRym and fills in every field for you.
