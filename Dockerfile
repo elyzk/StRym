@@ -10,8 +10,8 @@ ENV MAMBA_ROOT_PREFIX=/opt/mamba \
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Here we're reusing the predefined dependency installers, we could also just do all of this installation in the Dockerfile
-COPY setup_wsl.sh setup_modules.sh /tmp/strym-setup/
-RUN bash /tmp/strym-setup/setup_wsl.sh \
+COPY setup_env.sh setup_modules.sh /tmp/strym-setup/
+RUN bash /tmp/strym-setup/setup_env.sh \
     && bash /tmp/strym-setup/setup_modules.sh \
     && micromamba clean --all --yes \
     && rm -rf /tmp/strym-setup /root/.cache
